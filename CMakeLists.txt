@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Build options
 option(PLATFORM_LINUX "Build for Linux simulation" ON)
 option(BUILD_QT_GUI "Build Qt GUI Linux simulator" ON)
-option(PLATFORM_STM32F411CEUX6 "Build STM32F411CEUx6 MCU scaffold" OFF)
+option(PLATFORM_STM32G474 "Build STM32G474 MCU scaffold" OFF)
 
 # Find SpeexDSP
 find_package(PkgConfig REQUIRED)
@@ -66,13 +66,14 @@ if(PLATFORM_LINUX)
     endif()
 endif()
 
-# STM32F411CEUx6 MCU scaffold (board pin map + MCU integration entry points)
-if(PLATFORM_STM32F411CEUX6)
-    add_library(vox_stm32f411ceux6_board
-        platform/mcu/stm32f411ceux6_board.c
+# STM32G474 MCU scaffold (board pin map + MCU integration entry points)
+if(PLATFORM_STM32G474)
+    add_library(vox_stm32g474_board
+        platform/mcu/stm32g474_board.c
+        platform/mcu/vox_mcu_decimator.c
     )
-    target_include_directories(vox_stm32f411ceux6_board PUBLIC platform/mcu)
-    target_link_libraries(vox_stm32f411ceux6_board PUBLIC vox_core)
+    target_include_directories(vox_stm32g474_board PUBLIC platform/mcu)
+    target_link_libraries(vox_stm32g474_board PUBLIC vox_core)
 endif()
 
 # Tests

@@ -2,6 +2,11 @@
 
 A small-board VOX circuit using adaptive echo cancellation (AEC) and voice activity detection (VAD) to reliably key PTT from microphone audio while ignoring receive audio and background noise.
 
+## Acronyms
+
+- **AEC**: Adaptive Echo Cancellation
+- **VAD**: Voice Activity Detection
+
 ## Features
 
 - **AEC** — removes receive audio leaking into the microphone (anti-VOX), using SpeexDSP
@@ -122,27 +127,33 @@ tests/          Functional and regression tests
 docs/           User manual and design description
 ```
 
-## STM32F411CEUx6 Setup (Scaffold)
+## STM32G474 Setup (Scaffold)
 
-VOX now includes an initial STM32F411CEUx6 board scaffold using a Rotator-style
+VOX now includes an initial STM32G474 board scaffold using a Rotator-style
 pin definition table. This keeps all board wiring in one header and exposes a
 single pin-config struct for MCU glue code.
 
+ADC/DSP sample-rate plan:
+- ADC front end runs at 32 MHz
+- Decimation factor is 4000
+- AEC/VAD processing runs at 8 kHz
+
 Key files:
-- `platform/mcu/vox_pins_stm32f411ceux6_hco_board_v4.h` — board pin definitions
+- `platform/mcu/vox_pins_stm32g474_hco_board_v4.h` — board pin definitions
 - `platform/mcu/vox_mcu_pins.h` — encoded pin helper macros
 - `platform/mcu/vox_mcu_board.h` — pin-config interface
-- `platform/mcu/stm32f411ceux6_board.c` — concrete exported pin table
+- `platform/mcu/stm32g474_board.c` — concrete exported pin table
+- `platform/mcu/vox_mcu_decimator.h` + `.c` — ADC decimation frontend (32 MHz to 8 kHz)
 
 Enable the MCU scaffold target:
 
 ```sh
-cmake -S . -B build -DPLATFORM_LINUX=ON -DPLATFORM_STM32F411CEUX6=ON
+cmake -S . -B build -DPLATFORM_LINUX=ON -DPLATFORM_STM32G474=ON
 cmake --build build
 ```
 
 This does not yet include STM32 HAL/LL runtime drivers. It is the first step
-to define and standardize STM32F411CEUx6 board wiring before adding ADC, GPIO, and
+to define and standardize STM32G474 board wiring before adding ADC, GPIO, and
 PTT runtime integration.
 
 ## Documentation

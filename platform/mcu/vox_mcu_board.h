@@ -26,6 +26,10 @@ typedef struct {
 
     uint8_t adc_ch_mic_audio;
     uint8_t adc_ch_rx_audio;
+
+    uint32_t adc_sample_rate_hz;
+    uint32_t dsp_sample_rate_hz;
+    uint16_t decimation_factor;
 } VoxMcuPinConfig;
 
 const VoxMcuPinConfig *vox_mcu_get_pin_config(void);
