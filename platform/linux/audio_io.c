@@ -774,6 +774,95 @@ static int filter_alsa_card(const char *line, FILE *out)
     return 0;
 }
 
+/*
+ * audio_io_enumerate — structured-output companion to audio_io_list_devices.
+ *
+ * Parses the same `pactl list short sources` and `arecord -l` outputs
+ * that the human-readable printer uses, but returns the result as an
+ * AudioDeviceInfo array for a GUI to populate dropdowns from.
+ *
+ * pactl line format (tab-separated): <idx> <name> <driver> <spec> <state>
+ *   Sources without ".monitor" in the name are mic candidates;
+ *   sources with ".monitor" in the name are sink-monitor (rx) candidates.
+ *
+ * arecord -l line format: "card N: NAME [LongName], device M: ..."
+ *   ALSA captures are mic candidates only; their display string is the
+ *   raw arecord line so the user sees the same wording they'd get from
+ *   `arecord -l` directly.
+ *
+ * Returns the *total* number of devices found.  If `out_capacity` is
+ * smaller, only the first out_capacity entries are written; the count
+ * still reflects the real total so the caller can decide whether to
+ * reallocate and retry.
+ */
+int audio_io_enumerate(AudioDeviceInfo *out, int cap)
+{
+    int n = 0;
+    char line[1024];
+
+    /* PulseAudio sources */
+    FILE *p = popen("pactl list short sources 2>/dev/null", "r");
+    if (p) {
+        while (fgets(line, sizeof(line), p)) {
+            size_t L = strlen(line);
+            if (L && line[L - 1] == '\n')
+                line[--L] = 0;
+
+            /* Skip to field 2 (name). */
+            const char *t1 = strchr(line, '\t');
+            if (!t1)
+                continue;
+            const char *name_start = t1 + 1;
+            const char *t2 = strchr(name_start, '\t');
+            int name_len = t2 ? (int)(t2 - name_start) : (int)strlen(name_start);
+            if (name_len <= 0)
+                continue;
+
+            /* sized to leave room for the "pulse:" prefix in d->id (256). */
+            char name[240];
+            int copy = name_len < (int)sizeof(name) - 1 ? name_len : (int)sizeof(name) - 1;
+            memcpy(name, name_start, (size_t)copy);
+            name[copy] = 0;
+
+            const int is_monitor = strstr(name, ".monitor") != NULL;
+            if (n < cap && out) {
+                AudioDeviceInfo *d = &out[n];
+                d->kind = (unsigned)(is_monitor ? AUDIO_DEV_RX : AUDIO_DEV_MIC);
+                snprintf(d->id, sizeof(d->id), "pulse:%s", name);
+                snprintf(d->display, sizeof(d->display), "%s", name);
+            }
+            n++;
+        }
+        pclose(p);
+    }
+
+    /* ALSA capture devices (mic-only). */
+    p = popen("arecord -l 2>/dev/null", "r");
+    if (p) {
+        while (fgets(line, sizeof(line), p)) {
+            int card = -1, dev = -1;
+            if (sscanf(line, "card %d: %*[^,], device %d:", &card, &dev) != 2)
+                continue;
+            size_t L = strlen(line);
+            if (L && line[L - 1] == '\n')
+                line[--L] = 0;
+            if (n < cap && out) {
+                AudioDeviceInfo *d = &out[n];
+                d->kind = (unsigned)AUDIO_DEV_MIC;
+                snprintf(d->id, sizeof(d->id), "alsa:hw:%d,%d", card, dev);
+                /* strncpy + manual null term: snprintf would warn about
+                 * the source buffer being larger than the destination. */
+                strncpy(d->display, line, sizeof(d->display) - 1);
+                d->display[sizeof(d->display) - 1] = 0;
+            }
+            n++;
+        }
+        pclose(p);
+    }
+
+    return n;
+}
+
 int audio_io_list_devices(FILE *out)
 {
     if (!out)

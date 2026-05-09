@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -19,6 +20,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QGridLayout>
 #include <QLatin1Char>
 #include <QSlider>
@@ -29,6 +31,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <vector>
 
 #include <array>
 #include <algorithm>
@@ -640,6 +644,40 @@ public:
         auto *root = new QWidget();
         auto *layout = new QVBoxLayout(root);
 
+        // Device picker — at the top so "where am I getting audio from?"
+        // is the first thing the user sees.  Two QComboBoxes plus a
+        // Refresh button (Pulse devices come and go on USB plug events).
+        auto *deviceForm = new QFormLayout();
+        micDeviceCombo_ = new QComboBox();
+        rxDeviceCombo_  = new QComboBox();
+        micDeviceCombo_->setMinimumWidth(360);
+        rxDeviceCombo_->setMinimumWidth(360);
+
+        auto *micRow = new QHBoxLayout();
+        micRow->addWidget(micDeviceCombo_, 1);
+        auto *refreshBtn = new QPushButton("Refresh");
+        refreshBtn->setToolTip("Re-enumerate audio devices (after USB plug/unplug)");
+        micRow->addWidget(refreshBtn);
+
+        auto *rxRow = new QHBoxLayout();
+        rxRow->addWidget(rxDeviceCombo_, 1);
+        rxRow->addSpacing(refreshBtn->sizeHint().width() + 6);   /* align with mic row */
+
+        deviceForm->addRow("Microphone", micRow);
+        deviceForm->addRow("RX (speaker monitor)", rxRow);
+        layout->addLayout(deviceForm);
+
+        // Selection changes reopen the audio io with the new pick.
+        // Use the activated() signal (vs currentIndexChanged) so we
+        // ignore the initial population that runs before audio_ exists,
+        // and only react to actual user picks.
+        connect(micDeviceCombo_, QOverload<int>::of(&QComboBox::activated),
+                this, [this](int){ reopenAudio(); });
+        connect(rxDeviceCombo_,  QOverload<int>::of(&QComboBox::activated),
+                this, [this](int){ reopenAudio(); });
+        connect(refreshBtn, &QPushButton::clicked,
+                this, [this](){ populateDeviceDropdowns(); });
+
         auto *form = new QFormLayout();
 
         micLevelBar_ = new DualMicBar();
@@ -773,17 +811,11 @@ public:
 
         setCentralWidget(root);
 
-        AudioIOConfig acfg = {};
-        acfg.mic_device = "auto";
-        acfg.rx_device = "auto";
-        acfg.sample_rate = kSampleRate;
-        acfg.frame_size = kFrameSize;
-
-        audio_ = audio_io_open(&acfg);
-        if (!audio_) {
-            statusLabel_->setText("Audio open failed. Check PulseAudio/PipeWire sources.");
-            return;
-        }
+        // Populate the device dropdowns once before any first-time
+        // audio open — the auto-load below may select a non-default
+        // device, and we need that device to exist in the combo before
+        // we can set it.
+        populateDeviceDropdowns();
 
         VoxConfig vcfg = {};
         vcfg.sample_rate = kSampleRate;
@@ -799,26 +831,26 @@ public:
         vox_ = vox_create(&vcfg);
         if (!vox_) {
             statusLabel_->setText("VOX init failed.");
-            audio_io_close(audio_);
-            audio_ = nullptr;
             return;
         }
 
-        statusLabel_->setText("Running: auto-selected mic + default speaker monitor.");
-
-        auto *timer = new QTimer(this);
-        connect(timer, &QTimer::timeout, this, [this]() { onTick(); });
-        timer->start(kFrameMs);
-
         // Tuning persistence: build the File menu, then attempt to load
-        // a previous session's tuning from the default path.  If it
-        // doesn't exist or is malformed the sliders keep their compile-
-        // time defaults — first-run users see exactly what they saw
-        // before this feature existed.
+        // a previous session's tuning + device picks from the default
+        // path.  Missing or malformed files fall back silently to the
+        // compile-time defaults — first-run users see exactly what they
+        // saw before this feature existed.
         buildMenuBar();
         const QString defaultPath = defaultTuningPath();
         if (QFile::exists(defaultPath))
             loadTuningFile(defaultPath);
+
+        // Now that the device combos reflect either auto or the loaded
+        // picks, open the audio with the current selection.
+        reopenAudio();
+
+        auto *timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, [this]() { onTick(); });
+        timer->start(kFrameMs);
     }
 
     ~VoxWindow() override
@@ -842,13 +874,127 @@ protected:
     }
 
 private:
+    /* ---------- Audio device picker --------------------------------- */
+    /*
+     * The dropdowns hold one entry per audio device, with the canonical
+     * device-id string (e.g. "pulse:alsa_input.usb-...") in the item's
+     * userData and a short label as the display.  An "auto" entry is
+     * always at index 0.  Selection change triggers reopenAudio().
+     */
+    QString currentMicDeviceId() const
+    {
+        return micDeviceCombo_ ? micDeviceCombo_->currentData().toString() : "auto";
+    }
+    QString currentRxDeviceId() const
+    {
+        return rxDeviceCombo_ ? rxDeviceCombo_->currentData().toString() : "auto";
+    }
+
+    /* Try to select an item by its userData id; returns true on hit.
+     * If the id isn't present (device disappeared), falls back to
+     * "auto" (index 0) and returns false. */
+    static bool selectDeviceById(QComboBox *combo, const QString &id)
+    {
+        if (!combo) return false;
+        for (int i = 0; i < combo->count(); i++) {
+            if (combo->itemData(i).toString() == id) {
+                combo->setCurrentIndex(i);
+                return true;
+            }
+        }
+        combo->setCurrentIndex(0);   /* fall back to "auto" */
+        return false;
+    }
+
+    void populateDeviceDropdowns()
+    {
+        // Snapshot what was selected so we can restore after the rebuild.
+        const QString prevMic = currentMicDeviceId();
+        const QString prevRx  = currentRxDeviceId();
+
+        // Block currentIndexChanged signals during the rebuild — we
+        // don't want a transient "auto"-pass through to fire reopen.
+        QSignalBlocker mb(micDeviceCombo_);
+        QSignalBlocker rb(rxDeviceCombo_);
+
+        micDeviceCombo_->clear();
+        rxDeviceCombo_->clear();
+
+        // Always-present "auto" entry — matches the CLI's default and
+        // is the only thing first-run users will see.
+        micDeviceCombo_->addItem("auto (system default)", QString("auto"));
+        rxDeviceCombo_->addItem("auto (system default)",  QString("auto"));
+
+        // Enumerate via audio_io.  We size for plenty; pulse + alsa
+        // rarely exceed a dozen on a normal machine.
+        std::vector<AudioDeviceInfo> devs(64);
+        const int n = audio_io_enumerate(devs.data(), (int)devs.size());
+        const int filled = std::min(n, (int)devs.size());
+
+        for (int i = 0; i < filled; i++) {
+            const AudioDeviceInfo &d = devs[i];
+            const QString id      = QString::fromUtf8(d.id);
+            const QString display = QString::fromUtf8(d.display);
+            if (d.kind & AUDIO_DEV_MIC)
+                micDeviceCombo_->addItem(display, id);
+            if (d.kind & AUDIO_DEV_RX)
+                rxDeviceCombo_->addItem(display, id);
+        }
+
+        // Restore previous selection if still present.
+        selectDeviceById(micDeviceCombo_, prevMic);
+        selectDeviceById(rxDeviceCombo_,  prevRx);
+
+        statusBar()->showMessage(
+            QString("Found %1 audio device%2.")
+                .arg(filled)
+                .arg(filled == 1 ? "" : "s"),
+            2000);
+    }
+
+    /* Tear down audio_, reopen with whatever the dropdowns currently
+     * show.  Failure leaves audio_ NULL and reports via status label;
+     * onTick already handles audio_ == nullptr by skipping reads. */
+    void reopenAudio()
+    {
+        if (audio_) {
+            audio_io_close(audio_);
+            audio_ = nullptr;
+        }
+
+        const QByteArray micId = currentMicDeviceId().toUtf8();
+        const QByteArray rxId  = currentRxDeviceId().toUtf8();
+
+        AudioIOConfig acfg = {};
+        acfg.mic_device  = micId.constData();
+        acfg.rx_device   = rxId.constData();
+        acfg.sample_rate = kSampleRate;
+        acfg.frame_size  = kFrameSize;
+
+        audio_ = audio_io_open(&acfg);
+        if (!audio_) {
+            if (statusLabel_)
+                statusLabel_->setText(
+                    QString("Audio open failed for mic='%1' rx='%2'. "
+                            "Check Pulse/Pipewire and try Refresh.")
+                        .arg(QString::fromUtf8(micId))
+                        .arg(QString::fromUtf8(rxId)));
+            return;
+        }
+        if (statusLabel_)
+            statusLabel_->setText(
+                QString("Running: mic=%1  rx=%2")
+                    .arg(QString::fromUtf8(micId))
+                    .arg(QString::fromUtf8(rxId)));
+    }
+
     /* ---------- Tuning persistence ---------------------------------- */
     /*
-     * The tuning is just the slider values (which feed vox_set_tuning
-     * each frame).  JSON keeps the file human-editable, future-proof
-     * (a "version" field anchors migrations), and easy to email between
-     * developers.  No QSettings; we want a portable file we can
-     * inspect with a text editor.
+     * The tuning is the slider values (which feed vox_set_tuning each
+     * frame) plus the selected mic and rx device IDs.  JSON keeps the
+     * file human-editable, future-proof (a "version" field anchors
+     * migrations), and easy to email between developers.  No QSettings;
+     * we want a portable file we can inspect with a text editor.
      */
     static constexpr int kTuningFileVersion = 1;
 
@@ -877,6 +1023,8 @@ private:
         o["aec_led_reduction_pct"]     = aecThreshSlider_->value();
         o["rx_guard_vad_boost"]        = rxGuardVadBoostSlider_->value();
         o["rx_guard_snr_pct"]          = rxGuardSnrSlider_->value();
+        o["mic_device"]                = currentMicDeviceId();
+        o["rx_device"]                 = currentRxDeviceId();
         return o;
     }
 
@@ -904,6 +1052,14 @@ private:
         setIfPresent("aec_led_reduction_pct",     aecThreshSlider_);
         setIfPresent("rx_guard_vad_boost",        rxGuardVadBoostSlider_);
         setIfPresent("rx_guard_snr_pct",          rxGuardSnrSlider_);
+
+        // Device picks.  selectDeviceById falls back to "auto" if the
+        // saved device isn't present right now (e.g. unplugged USB
+        // mic), so the GUI is robust to environment changes.
+        if (o.contains("mic_device") && o["mic_device"].isString())
+            selectDeviceById(micDeviceCombo_, o["mic_device"].toString());
+        if (o.contains("rx_device") && o["rx_device"].isString())
+            selectDeviceById(rxDeviceCombo_, o["rx_device"].toString());
     }
 
     bool saveTuningFile(const QString &path)
@@ -1164,6 +1320,9 @@ private:
     QLabel *aecThreshValue_ = nullptr;
     QLabel *rxGuardVadBoostValue_ = nullptr;
     QLabel *rxGuardSnrValue_ = nullptr;
+
+    QComboBox *micDeviceCombo_ = nullptr;
+    QComboBox *rxDeviceCombo_  = nullptr;
 };
 
 } // namespace

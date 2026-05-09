@@ -46,6 +46,36 @@ void audio_io_close(AudioIO *audio);
  */
 int audio_io_list_devices(FILE *out);
 
+/*
+ * audio_io_enumerate — same enumeration as audio_io_list_devices, but
+ * returned as a structured array for the GUI to populate dropdowns
+ * with.  Both the CLI helper above and the GUI go through this one
+ * function.
+ *
+ * Caller passes an array `out_devices` of capacity `out_capacity`.
+ * Returns the total number of devices found (may be > out_capacity if
+ * the array was too small; in that case only out_capacity entries are
+ * filled).
+ *
+ * Each device's `id` is the exact string to pass back as `mic_device`
+ * or `rx_device` in AudioIOConfig (e.g. "pulse:<source-name>" or
+ * "alsa:hw:1,0").  `display` is a short human-friendly label.  `kind`
+ * tells the caller whether it's a mic candidate, an rx candidate, or
+ * both.
+ */
+typedef enum {
+    AUDIO_DEV_MIC = 1u << 0,    /* suitable as a mic input  */
+    AUDIO_DEV_RX  = 1u << 1,    /* suitable as an rx-reference (sink monitor) */
+} AudioDeviceKind;
+
+typedef struct {
+    unsigned kind;          /* OR of AUDIO_DEV_* bits */
+    char     id[256];       /* canonical ID for AudioIOConfig.mic/rx_device */
+    char     display[256];  /* short human-readable label */
+} AudioDeviceInfo;
+
+int audio_io_enumerate(AudioDeviceInfo *out_devices, int out_capacity);
+
 #ifdef __cplusplus
 }
 #endif

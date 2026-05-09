@@ -32,7 +32,6 @@ codebase, gated visibility.  See:
 - [ ] **Operator-face / Developer-face toggle** — view menu radio that hides advanced widgets (residual plot, debug grid, decision summary, advanced sliders) for Story 3.  All advanced widgets stay in the layout, just hidden.
 
 ### Medium priority — sim-only, useful now
-- [ ] **Device picker dropdowns** — currently mic/rx are `auto`-only.  CLI has `-m/-r`, GUI doesn't.  Helps when running the same binary on desktop vs. laptop.
 - [ ] **Snapshot button on the time-series plot** — dump current 30 s of history to CSV for later analysis.  Single click; complements the 10–30 s window with a way to keep "this moment was interesting."
 - [ ] **CSV / JSONL log export** — continuous version of the snapshot button; per-frame state to a file for offline grep / Python analysis.
 - [ ] **Pause / resume scrolling + click-to-pin cursor** in the time-series plot.
@@ -112,3 +111,4 @@ forget about them when they intersect with firmware work.
 - [x] Light-mode sweep across all panels in vox_qt — *done in commit `82272fc`*
 - [x] User stories captured + dongle protocol header design — *done in commits `e326551`, `15a2801`*
 - [x] Tuning save/load JSON in vox_qt — *done; ~/.config/vox/tuning.json, auto-load, auto-save*
+- [x] Device picker dropdowns in vox_qt — *done; mic + rx combos, Refresh button, persisted in tuning.json, falls back to auto if a saved device disappeared*
