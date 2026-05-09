@@ -43,6 +43,7 @@ See `~/.claude/projects/-home-jeff-ham-VOX/memory/gui-one-app-two-modes.md`.
 ### Dongle mode (post-shield, post-USB-CDC firmware)
 - [ ] **Add "connect to dongle" run-mode** to vox_qt: open `/dev/ttyACMx`, parse the protocol frames, render same widgets.
 - [ ] **Bidirectional tuning** — slider moves → write opcode → dongle's `vox_set_tuning` runs on chip.
+- [ ] **PC-audio-over-USB development mode** — pipe live PC mic + speaker-monitor PCM streams from vox_qt over USB CDC to the chip, run `vox_process` on real silicon, return state frames.  Lets us validate the algorithm path on the chip before the analog shield exists.  Bandwidth: 256 kbit/s in + 32 kbit/s out = <3% of USB FS.  CPU: needs slice D PLL up to 150–170 MHz first (HSI16 is borderline-to-impossible for 50 fps speex).
 
 ---
 

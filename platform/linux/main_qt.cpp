@@ -7,11 +7,13 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QPainter>
+#include <QPalette>
 #include <QProgressBar>
 #include <QGridLayout>
 #include <QLatin1Char>
 #include <QSlider>
 #include <QStringList>
+#include <QStyleFactory>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -29,6 +31,57 @@ constexpr int kSampleRate = 8000;
 constexpr int kFrameMs = 20;
 constexpr int kFrameSize = (kSampleRate * kFrameMs) / 1000;
 constexpr double kFullScale = 32767.0;
+
+// ---------- Light-mode theme ----------------------------------------
+//
+// Single source of truth for colors used by inline stylesheets and by
+// the custom widgets' QPainter calls.  When we refactor to a real
+// theme system later, all named uses can flip to a different palette
+// without hunting through paintEvent code.
+namespace theme {
+    // Surfaces
+    constexpr const char *kPanelBg     = "#ffffff";
+    constexpr const char *kPanelBorder = "#cbd5e1";
+    constexpr const char *kInputBg     = "#f1f5f9";
+    constexpr const char *kSubtleBg    = "#f8fafc";
+    constexpr const char *kGridLine    = "#e2e8f0";
+    constexpr const char *kAxisGuide   = "#94a3b8";
+
+    // Text
+    constexpr const char *kTextPrimary   = "#1e293b";
+    constexpr const char *kTextSecondary = "#64748b";
+
+    // LED off state
+    constexpr const char *kLedOffBg   = "#e2e8f0";
+    constexpr const char *kLedOffText = "#64748b";
+
+    // PTT block
+    constexpr const char *kPttOnBg    = "#dcfce7";
+    constexpr const char *kPttOnText  = "#166534";
+    constexpr const char *kPttOffBg   = "#fee2e2";
+    constexpr const char *kPttOffText = "#991b1b";
+
+    // Data series — chosen for distinguishability on a white background
+    // (saturated mid-darks rather than pastels).
+    constexpr const char *kSeriesMicRaw   = "#15803d";  // green
+    constexpr const char *kSeriesMicPost  = "#c2410c";  // burnt orange
+    constexpr const char *kSeriesRx       = "#1d4ed8";  // blue
+    constexpr const char *kSeriesSnr      = "#6d28d9";  // purple
+    constexpr const char *kSeriesVadRaw   = "#fb923c";  // light orange
+    constexpr const char *kSeriesVadValid = "#ea580c";  // orange
+    constexpr const char *kSeriesThresh   = "#f97316";  // orange (dashed ref)
+    constexpr const char *kSeriesPtt      = "#22c55e";  // green band
+
+    // DualMicBar: low-marker strip and the AEC-attenuation strip
+    constexpr const char *kMicBarLow   = "#86efac";  // mint
+    constexpr const char *kMicBarHigh  = "#fda4af";  // rose
+    constexpr const char *kMicBarLineRaw  = "#0f172a";
+    constexpr const char *kMicBarLinePost = "#a16207";
+
+    // Residual-delay polyline + peak marker
+    constexpr const char *kResidualLine = "#0284c7";
+    constexpr const char *kResidualPeak = "#d97706";
+}  // namespace theme
 
 QProgressBar *createBar(int minValue, int maxValue)
 {
@@ -90,13 +143,14 @@ QLabel *createValueLabel()
     auto *label = new QLabel("0");
     label->setMinimumWidth(84);
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    label->setStyleSheet(
-        "background:#20242a;"
-        "color:#e8edf2;"
-        "border:1px solid #4d5662;"
+    label->setStyleSheet(QString(
+        "background:%1;"
+        "color:%2;"
+        "border:1px solid %3;"
         "border-radius:5px;"
         "padding:4px 8px;"
-        "font-family:monospace;");
+        "font-family:monospace;")
+        .arg(theme::kInputBg, theme::kTextPrimary, theme::kPanelBorder));
     return label;
 }
 
@@ -114,13 +168,14 @@ QLabel *createLedLamp(const QString &name)
     auto *lamp = new QLabel(name);
     lamp->setMinimumWidth(72);
     lamp->setAlignment(Qt::AlignCenter);
-    lamp->setStyleSheet(
-        "background:#3b3b3b;"
-        "color:#cfcfcf;"
-        "border:1px solid #666;"
+    lamp->setStyleSheet(QString(
+        "background:%1;"
+        "color:%2;"
+        "border:1px solid %3;"
         "border-radius:10px;"
         "padding:4px;"
-        "font-weight:600;");
+        "font-weight:600;")
+        .arg(theme::kLedOffBg, theme::kLedOffText, theme::kPanelBorder));
     return lamp;
 }
 
@@ -133,18 +188,19 @@ void setLedLamp(QLabel *lamp, bool on, const QString &onColor)
         lamp->setStyleSheet(QString(
             "background:%1;"
             "color:#ffffff;"
-            "border:1px solid #222;"
+            "border:1px solid #1f2937;"
             "border-radius:10px;"
             "padding:4px;"
             "font-weight:700;").arg(onColor));
     } else {
-        lamp->setStyleSheet(
-            "background:#3b3b3b;"
-            "color:#cfcfcf;"
-            "border:1px solid #666;"
+        lamp->setStyleSheet(QString(
+            "background:%1;"
+            "color:%2;"
+            "border:1px solid %3;"
             "border-radius:10px;"
             "padding:4px;"
-            "font-weight:600;");
+            "font-weight:600;")
+            .arg(theme::kLedOffBg, theme::kLedOffText, theme::kPanelBorder));
     }
 }
 
@@ -204,8 +260,8 @@ protected:
         const QRect r = rect().adjusted(1, 1, -1, -1);
         const int radius = 5;
 
-        p.setPen(QPen(QColor("#4d5662"), 1));
-        p.setBrush(QColor("#20242a"));
+        p.setPen(QPen(QColor(theme::kPanelBorder), 1));
+        p.setBrush(QColor(theme::kInputBg));
         p.drawRoundedRect(r, radius, radius);
 
         const int w = std::max(1, r.width());
@@ -219,17 +275,17 @@ protected:
         const int highX = std::max(rawX, postX);
 
         if (lowX > x0)
-            p.fillRect(QRect(x0, y0, lowX - x0, h), QColor("#2f8f5a"));
+            p.fillRect(QRect(x0, y0, lowX - x0, h), QColor(theme::kMicBarLow));
         if (highX > lowX)
-            p.fillRect(QRect(lowX, y0, highX - lowX, h), QColor("#a43a3a"));
+            p.fillRect(QRect(lowX, y0, highX - lowX, h), QColor(theme::kMicBarHigh));
 
-        p.setPen(QPen(QColor("#f0f6ff"), 2));
+        p.setPen(QPen(QColor(theme::kMicBarLineRaw), 2));
         p.drawLine(rawX, y0, rawX, y0 + h - 1);
-        p.setPen(QPen(QColor("#ffd66b"), 2));
+        p.setPen(QPen(QColor(theme::kMicBarLinePost), 2));
         p.drawLine(postX, y0, postX, y0 + h - 1);
 
         const QString text = QString("M:%1  P:%2").arg(rawText_).arg(postText_);
-        p.setPen(QColor("#f1f5f9"));
+        p.setPen(QColor(theme::kTextPrimary));
         p.drawText(r, Qt::AlignCenter, text);
     }
 
@@ -269,8 +325,8 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const QRect r = rect().adjusted(1, 1, -1, -1);
-        p.setPen(QPen(QColor("#4d5662"), 1));
-        p.setBrush(QColor("#131820"));
+        p.setPen(QPen(QColor(theme::kPanelBorder), 1));
+        p.setBrush(QColor(theme::kPanelBg));
         p.drawRoundedRect(r, 6, 6);
 
         const QRect plot = r.adjusted(8, 8, -8, -22);
@@ -280,7 +336,7 @@ protected:
         const int zeroIdx = (0 - minDelaySamples_) / std::max(1, stepSamples_);
         if (zeroIdx >= 0 && zeroIdx < VOX_RESIDUAL_CORR_PROFILE_POINTS) {
             const int zx = plot.left() + (zeroIdx * plot.width()) / (VOX_RESIDUAL_CORR_PROFILE_POINTS - 1);
-            p.setPen(QPen(QColor("#3b475a"), 1, Qt::DashLine));
+            p.setPen(QPen(QColor(theme::kAxisGuide), 1, Qt::DashLine));
             p.drawLine(zx, plot.top(), zx, plot.bottom());
         }
 
@@ -292,19 +348,19 @@ protected:
             poly << QPoint(x, y);
         }
 
-        p.setPen(QPen(QColor("#59c6ff"), 2));
+        p.setPen(QPen(QColor(theme::kResidualLine), 2));
         p.drawPolyline(poly);
 
         int peakIdx = (peakDelaySamples_ - minDelaySamples_) / std::max(1, stepSamples_);
         if (peakIdx >= 0 && peakIdx < VOX_RESIDUAL_CORR_PROFILE_POINTS) {
             int px = plot.left() + (peakIdx * plot.width()) / (VOX_RESIDUAL_CORR_PROFILE_POINTS - 1);
             int py = plot.bottom() - (profile_[peakIdx] * plot.height()) / 100;
-            p.setPen(QPen(QColor("#ffd166"), 2));
-            p.setBrush(QColor("#ffd166"));
+            p.setPen(QPen(QColor(theme::kResidualPeak), 2));
+            p.setBrush(QColor(theme::kResidualPeak));
             p.drawEllipse(QPoint(px, py), 3, 3);
         }
 
-        p.setPen(QColor("#9aa6b2"));
+        p.setPen(QColor(theme::kTextSecondary));
         p.drawText(QRect(plot.left(), plot.bottom() + 2, plot.width(), 16),
                    Qt::AlignLeft | Qt::AlignVCenter, "delay-");
         p.drawText(QRect(plot.left(), plot.bottom() + 2, plot.width(), 16),
@@ -318,12 +374,256 @@ private:
     int peakDelaySamples_ = 0;
 };
 
+/*
+ * TimeSeriesPlot — scrolling time-series view of VOX state.
+ *
+ * Four stacked panels share one time axis (latest sample on the right):
+ *   1) Levels (dBFS, -90..0)        : mic_raw, mic_post_aec, rx
+ *   2) SNR    (dB,    -10..+30)     : post-AEC SNR vs noise floor
+ *   3) VAD    (%,       0..100)     : raw + validated, with the active
+ *                                      VAD threshold drawn as a dashed line
+ *   4) PTT    (boolean band)        : filled green when on
+ *
+ * Storage is a single ring buffer of HistoryFrame.  Pushing a sample is
+ * O(1); painting is one walk over the buffer, so cost scales linearly
+ * with capacity.  Default 30 s at 50 fps = 1500 frames ≈ 48 KB total —
+ * trivial.
+ *
+ * Units mirror the existing scalar widgets (dBFS / dB / %) so a glance
+ * at the right edge matches the bars and labels above.
+ */
+struct HistoryFrame {
+    float mic_raw_dbfs;
+    float mic_post_dbfs;
+    float rx_dbfs;
+    float snr_db;
+    int   vad_raw_pct;
+    int   vad_validated_pct;
+    int   vad_threshold_pct;
+    bool  ptt;
+};
+
+class TimeSeriesPlot : public QWidget {
+public:
+    static constexpr int kHistorySeconds = 30;
+    static constexpr int kFps             = 50;
+    static constexpr int kCapacity        = kHistorySeconds * kFps;
+
+    explicit TimeSeriesPlot(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumHeight(280);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+        history_.fill(HistoryFrame{-90.0f, -90.0f, -90.0f, 0.0f, 0, 0, 60, false});
+    }
+
+    void pushSample(const HistoryFrame &f)
+    {
+        history_[head_] = f;
+        head_ = (head_ + 1) % kCapacity;
+        if (filled_ < kCapacity)
+            filled_++;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        (void)event;
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect r = rect().adjusted(1, 1, -1, -1);
+        p.setPen(QPen(QColor(theme::kPanelBorder), 1));
+        p.setBrush(QColor(theme::kPanelBg));
+        p.drawRoundedRect(r, 6, 6);
+
+        // Layout: 4 panels stacked, with thin separators.
+        // Allocate vertical space proportionally:
+        //   levels: 0.36  snr: 0.22  vad: 0.30  ptt: 0.12
+        const QRect inner = r.adjusted(8, 6, -8, -6);
+        const int total_h = inner.height();
+        const int gap     = 4;
+        const int h_ptt   = 18;
+        const int h_remaining = total_h - h_ptt - 3 * gap;
+        const int h_lvl   = (h_remaining * 36) / 88;
+        const int h_snr   = (h_remaining * 22) / 88;
+        const int h_vad   = h_remaining - h_lvl - h_snr;
+
+        QRect r_lvl = QRect(inner.left(), inner.top(),                    inner.width(), h_lvl);
+        QRect r_snr = QRect(inner.left(), r_lvl.bottom() + gap,           inner.width(), h_snr);
+        QRect r_vad = QRect(inner.left(), r_snr.bottom() + gap,           inner.width(), h_vad);
+        QRect r_ptt = QRect(inner.left(), r_vad.bottom() + gap,           inner.width(), h_ptt);
+
+        drawPanelBg(p, r_lvl, "Levels (dBFS)");
+        drawPanelBg(p, r_snr, "SNR (dB)");
+        drawPanelBg(p, r_vad, "VAD (%)");
+        drawPanelBg(p, r_ptt, "PTT");
+
+        if (filled_ == 0)
+            return;
+
+        // Levels panel: -90 dBFS at bottom, 0 dBFS at top.
+        drawHGrid(p, r_lvl, /*minv=*/-90.0f, /*maxv=*/0.0f, /*step=*/30.0f);
+        drawSeriesF(p, r_lvl, -90.0f, 0.0f,
+                    [](const HistoryFrame &f){ return f.mic_raw_dbfs; },  QColor(theme::kSeriesMicRaw));
+        drawSeriesF(p, r_lvl, -90.0f, 0.0f,
+                    [](const HistoryFrame &f){ return f.mic_post_dbfs; }, QColor(theme::kSeriesMicPost));
+        drawSeriesF(p, r_lvl, -90.0f, 0.0f,
+                    [](const HistoryFrame &f){ return f.rx_dbfs; },       QColor(theme::kSeriesRx));
+        drawLegend(p, r_lvl, {{"mic",  QColor(theme::kSeriesMicRaw)},
+                              {"post", QColor(theme::kSeriesMicPost)},
+                              {"rx",   QColor(theme::kSeriesRx)}});
+
+        // SNR panel: -10 dB at bottom, +30 dB at top, single line.
+        drawHGrid(p, r_snr, -10.0f, 30.0f, 10.0f);
+        drawSeriesF(p, r_snr, -10.0f, 30.0f,
+                    [](const HistoryFrame &f){ return f.snr_db; }, QColor(theme::kSeriesSnr));
+        drawLegend(p, r_snr, {{"snr", QColor(theme::kSeriesSnr)}});
+
+        // VAD panel: 0..100 % with active threshold as a dashed reference line.
+        drawHGrid(p, r_vad, 0.0f, 100.0f, 25.0f);
+        // Threshold line (uses the most recent sample's threshold as a single
+        // horizontal line; if it changes mid-window we'd need a separate
+        // series, but threshold tweaking is a slow human action).
+        const HistoryFrame &latest = history_[(head_ + kCapacity - 1) % kCapacity];
+        drawHorizontalRefLine(p, r_vad, 0.0f, 100.0f,
+                              (float)latest.vad_threshold_pct,
+                              QColor(theme::kSeriesThresh), Qt::DashLine);
+        drawSeriesI(p, r_vad, 0, 100,
+                    [](const HistoryFrame &f){ return f.vad_raw_pct; },       QColor(theme::kSeriesVadRaw));
+        drawSeriesI(p, r_vad, 0, 100,
+                    [](const HistoryFrame &f){ return f.vad_validated_pct; }, QColor(theme::kSeriesVadValid));
+        drawLegend(p, r_vad, {{"raw",   QColor(theme::kSeriesVadRaw)},
+                              {"valid", QColor(theme::kSeriesVadValid)},
+                              {"thr",   QColor(theme::kSeriesThresh)}});
+
+        // PTT panel: filled rectangles where ptt was on.
+        drawPttBand(p, r_ptt);
+    }
+
+private:
+    void drawPanelBg(QPainter &p, const QRect &r, const QString &title)
+    {
+        p.setPen(QPen(QColor(theme::kPanelBorder), 1));
+        p.setBrush(QColor(theme::kSubtleBg));
+        p.drawRoundedRect(r, 4, 4);
+
+        p.setPen(QColor(theme::kTextSecondary));
+        p.setFont(QFont("monospace", 8));
+        p.drawText(r.adjusted(4, 1, -4, -1), Qt::AlignLeft | Qt::AlignTop, title);
+    }
+
+    void drawHGrid(QPainter &p, const QRect &r, float minv, float maxv, float step)
+    {
+        if (maxv <= minv || step <= 0)
+            return;
+        p.setPen(QPen(QColor(theme::kGridLine), 1, Qt::DashLine));
+        for (float v = minv; v <= maxv + 1e-3f; v += step) {
+            float t = (v - minv) / (maxv - minv);
+            int y = r.bottom() - int(t * r.height());
+            p.drawLine(r.left(), y, r.right(), y);
+        }
+    }
+
+    void drawHorizontalRefLine(QPainter &p, const QRect &r, float minv, float maxv,
+                               float v, QColor color, Qt::PenStyle style)
+    {
+        if (maxv <= minv) return;
+        float t = (v - minv) / (maxv - minv);
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        int y = r.bottom() - int(t * r.height());
+        p.setPen(QPen(color, 1, style));
+        p.drawLine(r.left(), y, r.right(), y);
+    }
+
+    template<typename Getter>
+    void drawSeriesF(QPainter &p, const QRect &r, float minv, float maxv,
+                     Getter getter, QColor color)
+    {
+        if (filled_ == 0 || maxv <= minv) return;
+
+        QPolygon poly;
+        poly.reserve(filled_);
+        for (int i = 0; i < filled_; i++) {
+            // Map oldest sample to the LEFT edge, newest to the RIGHT edge.
+            int sample_idx = (head_ + kCapacity - filled_ + i) % kCapacity;
+            float v = getter(history_[sample_idx]);
+            if (v < minv) v = minv;
+            if (v > maxv) v = maxv;
+            float t  = (v - minv) / (maxv - minv);
+            int   x  = r.left() + (i * r.width()) / std::max(1, kCapacity - 1);
+            int   y  = r.bottom() - int(t * r.height());
+            poly << QPoint(x, y);
+        }
+        p.setPen(QPen(color, 1.5));
+        p.drawPolyline(poly);
+    }
+
+    template<typename Getter>
+    void drawSeriesI(QPainter &p, const QRect &r, int minv, int maxv,
+                     Getter getter, QColor color)
+    {
+        // Wrap the int getter into a float getter so we don't duplicate the body.
+        drawSeriesF(p, r, (float)minv, (float)maxv,
+                    [getter](const HistoryFrame &f) { return (float)getter(f); },
+                    color);
+    }
+
+    void drawPttBand(QPainter &p, const QRect &r)
+    {
+        if (filled_ == 0) return;
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(theme::kSeriesPtt));
+        // Walk the buffer; for each contiguous run of ptt==true draw a rectangle.
+        int run_start_i = -1;
+        for (int i = 0; i <= filled_; i++) {
+            bool on = false;
+            if (i < filled_) {
+                int idx = (head_ + kCapacity - filled_ + i) % kCapacity;
+                on = history_[idx].ptt;
+            }
+            if (on && run_start_i < 0) {
+                run_start_i = i;
+            } else if (!on && run_start_i >= 0) {
+                int x0 = r.left() + (run_start_i * r.width()) / std::max(1, kCapacity - 1);
+                int x1 = r.left() + (i           * r.width()) / std::max(1, kCapacity - 1);
+                p.drawRect(QRect(x0, r.top() + 12, x1 - x0, r.height() - 14));
+                run_start_i = -1;
+            }
+        }
+    }
+
+    void drawLegend(QPainter &p, const QRect &r, std::initializer_list<std::pair<QString, QColor>> items)
+    {
+        p.setFont(QFont("monospace", 7));
+        int x = r.right() - 6;
+        QFontMetrics fm(p.font());
+        for (auto it = items.end(); it != items.begin(); ) {
+            --it;
+            int w = fm.horizontalAdvance(it->first) + 14;
+            x -= w;
+            p.setPen(Qt::NoPen);
+            p.setBrush(it->second);
+            p.drawRect(x, r.top() + 3, 8, 8);
+            p.setPen(it->second);
+            p.drawText(x + 12, r.top() + 11, it->first);
+        }
+    }
+
+    std::array<HistoryFrame, kCapacity> history_{};
+    int head_   = 0;
+    int filled_ = 0;
+};
+
 class VoxWindow : public QMainWindow {
 public:
     VoxWindow()
     {
         setWindowTitle("VOX Linux Test GUI");
-        resize(860, 560);
+        resize(880, 860);
 
         auto *root = new QWidget();
         auto *layout = new QVBoxLayout(root);
@@ -343,6 +643,13 @@ public:
         form->addRow("AEC Score", aecScoreBar_);
 
         layout->addLayout(form);
+
+        auto *historyTitle = new QLabel("History (last 30 s)");
+        historyTitle->setStyleSheet("font-weight:700;");
+        layout->addWidget(historyTitle);
+
+        timeSeriesPlot_ = new TimeSeriesPlot();
+        layout->addWidget(timeSeriesPlot_);
 
         auto *ledTitle = new QLabel("MCU LED Indicators");
         ledTitle->setStyleSheet("font-weight:700;");
@@ -368,7 +675,9 @@ public:
         pttIndicator_ = new QLabel("OFF");
         pttIndicator_->setMinimumWidth(80);
         pttIndicator_->setAlignment(Qt::AlignCenter);
-        pttIndicator_->setStyleSheet("background:#4a1d1d;color:#ffdede;border-radius:6px;padding:6px;font-weight:600;");
+        pttIndicator_->setStyleSheet(QString(
+            "background:%1;color:%2;border-radius:6px;padding:6px;font-weight:600;")
+            .arg(theme::kPttOffBg, theme::kPttOffText));
         pttRow->addWidget(pttLabel);
         pttRow->addWidget(pttIndicator_);
         pttRow->addStretch(1);
@@ -412,18 +721,20 @@ public:
         layout->addWidget(residualDelayPlot_);
 
         residualPeakLabel_ = new QLabel("Peak: --");
-        residualPeakLabel_->setStyleSheet("font-family:monospace;color:#c9d6e2;");
+        residualPeakLabel_->setStyleSheet(QString(
+            "font-family:monospace;color:%1;").arg(theme::kTextSecondary));
         layout->addWidget(residualPeakLabel_);
 
         decisionSummaryLabel_ = new QLabel("Waiting for first audio frame...");
         decisionSummaryLabel_->setWordWrap(true);
-        decisionSummaryLabel_->setStyleSheet(
-            "background:#182028;"
-            "color:#d9e7f2;"
-            "border:1px solid #425063;"
+        decisionSummaryLabel_->setStyleSheet(QString(
+            "background:%1;"
+            "color:%2;"
+            "border:1px solid %3;"
             "border-radius:6px;"
             "padding:8px;"
-            "font-family:monospace;");
+            "font-family:monospace;")
+            .arg(theme::kInputBg, theme::kTextPrimary, theme::kPanelBorder));
         layout->addWidget(decisionSummaryLabel_);
 
         auto *sliderTitle = new QLabel("Tuning");
@@ -537,18 +848,23 @@ private:
         aecScoreBar_->setValue(state.aec_reduction_pct);
         aecScoreBar_->setFormat(QString("%1%% / %2 dB").arg(state.aec_reduction_pct).arg(ratioToDb(debug.mic_level_raw, debug.mic_level_post_aec), 0, 'f', 1));
 
-        setLedLamp(micLedLamp_, state.mic_led != 0, "#2d7d46");
-        setLedLamp(rxLedLamp_, state.rx_led != 0, "#20688a");
-        setLedLamp(vadLedLamp_, state.vad_led != 0, "#8a5a22");
-        setLedLamp(aecLedLamp_, state.aec_led != 0, "#6f3ea0");
-        setLedLamp(pttLedLamp_, state.ptt_led != 0, "#a32d2d");
+        // LED on-colors picked for light bg + white text legibility.
+        setLedLamp(micLedLamp_, state.mic_led != 0, "#16a34a");  // green
+        setLedLamp(rxLedLamp_,  state.rx_led  != 0, "#2563eb");  // blue
+        setLedLamp(vadLedLamp_, state.vad_led != 0, "#d97706");  // amber
+        setLedLamp(aecLedLamp_, state.aec_led != 0, "#7c3aed");  // purple
+        setLedLamp(pttLedLamp_, state.ptt_led != 0, "#dc2626");  // red
 
         if (state.ptt_led) {
             pttIndicator_->setText("ON");
-            pttIndicator_->setStyleSheet("background:#1f6f3b;color:#e6ffe6;border-radius:6px;padding:6px;font-weight:700;");
+            pttIndicator_->setStyleSheet(QString(
+                "background:%1;color:%2;border-radius:6px;padding:6px;font-weight:700;")
+                .arg(theme::kPttOnBg, theme::kPttOnText));
         } else {
             pttIndicator_->setText("OFF");
-            pttIndicator_->setStyleSheet("background:#4a1d1d;color:#ffdede;border-radius:6px;padding:6px;font-weight:600;");
+            pttIndicator_->setStyleSheet(QString(
+                "background:%1;color:%2;border-radius:6px;padding:6px;font-weight:600;")
+                .arg(theme::kPttOffBg, theme::kPttOffText));
         }
 
         double snrDb = ratioToDb(debug.mic_level_post_aec, debug.noise_floor);
@@ -580,6 +896,18 @@ private:
         residualCorrValue_->setText(QString("%1%%").arg(formatSignedInt(debug.residual_corr_pct, 3)));
         residualLevelValue_->setText(formatDbfsTenths(debug.residual_corr_dbfs_tenths));
         residualDelayPlot_->setProfile(debug);
+
+        // Feed the time-series plot one frame's worth of state.
+        HistoryFrame hf;
+        hf.mic_raw_dbfs       = (float)levelToDbfs(debug.mic_level_raw);
+        hf.mic_post_dbfs      = (float)levelToDbfs(debug.mic_level_post_aec);
+        hf.rx_dbfs            = (float)levelToDbfs(debug.rx_level);
+        hf.snr_db             = (float)snrDb;
+        hf.vad_raw_pct        = state.vad_probability_raw;
+        hf.vad_validated_pct  = state.vad_probability;
+        hf.vad_threshold_pct  = debug.effective_vad_threshold;
+        hf.ptt                = state.ptt_led != 0;
+        timeSeriesPlot_->pushSample(hf);
         double peakMs = (double)debug.residual_corr_peak_delay_samples * 1000.0 / (double)kSampleRate;
         residualPeakLabel_->setText(
             QString("Peak: %1%% at %2 samples (%3 ms)")
@@ -644,6 +972,7 @@ private:
     QLabel *residualPeakLabel_ = nullptr;
 
     ResidualDelayPlot *residualDelayPlot_ = nullptr;
+    TimeSeriesPlot    *timeSeriesPlot_    = nullptr;
 
     QLabel *micLedLamp_ = nullptr;
     QLabel *rxLedLamp_ = nullptr;
@@ -673,6 +1002,24 @@ private:
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+
+    // Force a light palette regardless of the system theme.  The "Fusion"
+    // style respects palette settings consistently across desktops; the
+    // platform-default style on KDE/GNOME may ignore some role colors.
+    app.setStyle(QStyleFactory::create("Fusion"));
+    QPalette palette;
+    palette.setColor(QPalette::Window,          QColor("#f8fafc"));
+    palette.setColor(QPalette::WindowText,      QColor("#1e293b"));
+    palette.setColor(QPalette::Base,            QColor("#ffffff"));
+    palette.setColor(QPalette::AlternateBase,   QColor("#f1f5f9"));
+    palette.setColor(QPalette::Text,            QColor("#1e293b"));
+    palette.setColor(QPalette::Button,          QColor("#e2e8f0"));
+    palette.setColor(QPalette::ButtonText,      QColor("#1e293b"));
+    palette.setColor(QPalette::Highlight,       QColor("#3b82f6"));
+    palette.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    palette.setColor(QPalette::ToolTipBase,     QColor("#ffffff"));
+    palette.setColor(QPalette::ToolTipText,     QColor("#1e293b"));
+    app.setPalette(palette);
 
     VoxWindow window;
     window.show();
