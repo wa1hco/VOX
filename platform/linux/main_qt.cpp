@@ -1,17 +1,29 @@
 #include "audio_io.h"
 #include "vox.h"
 
+#include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMenuBar>
+#include <QMenu>
 #include <QPainter>
 #include <QPalette>
 #include <QProgressBar>
 #include <QGridLayout>
 #include <QLatin1Char>
 #include <QSlider>
+#include <QStandardPaths>
+#include <QStatusBar>
 #include <QStringList>
 #include <QStyleFactory>
 #include <QTimer>
@@ -797,6 +809,16 @@ public:
         auto *timer = new QTimer(this);
         connect(timer, &QTimer::timeout, this, [this]() { onTick(); });
         timer->start(kFrameMs);
+
+        // Tuning persistence: build the File menu, then attempt to load
+        // a previous session's tuning from the default path.  If it
+        // doesn't exist or is malformed the sliders keep their compile-
+        // time defaults — first-run users see exactly what they saw
+        // before this feature existed.
+        buildMenuBar();
+        const QString defaultPath = defaultTuningPath();
+        if (QFile::exists(defaultPath))
+            loadTuningFile(defaultPath);
     }
 
     ~VoxWindow() override
@@ -807,7 +829,154 @@ public:
             audio_io_close(audio_);
     }
 
+protected:
+    /* Auto-save tuning at exit so the next launch picks up where this
+     * one ended.  Honors the same default-path logic as auto-load. */
+    void closeEvent(QCloseEvent *event) override
+    {
+        const QString path = defaultTuningPath();
+        if (saveTuningFile(path)) {
+            // Saved successfully; nothing to do (no UI left to update).
+        }
+        QMainWindow::closeEvent(event);
+    }
+
 private:
+    /* ---------- Tuning persistence ---------------------------------- */
+    /*
+     * The tuning is just the slider values (which feed vox_set_tuning
+     * each frame).  JSON keeps the file human-editable, future-proof
+     * (a "version" field anchors migrations), and easy to email between
+     * developers.  No QSettings; we want a portable file we can
+     * inspect with a text editor.
+     */
+    static constexpr int kTuningFileVersion = 1;
+
+    QString defaultTuningPath() const
+    {
+        // QStandardPaths::AppConfigLocation maps to e.g. ~/.config/<app>
+        // on Linux, %APPDATA%/<app> on Windows, ~/Library/Preferences
+        // on macOS.  Single source of truth for "where does our tuning
+        // live by default."
+        const QString dir = QStandardPaths::writableLocation(
+            QStandardPaths::AppConfigLocation);
+        QDir().mkpath(dir);
+        return dir + "/tuning.json";
+    }
+
+    /* Build a JSON object snapshot of the current slider values.
+     * Format is the on-disk contract — keep field names stable. */
+    QJsonObject captureTuningJson() const
+    {
+        QJsonObject o;
+        o["version"]                   = kTuningFileVersion;
+        o["hang_ms"]                   = hangSlider_->value();
+        o["mic_led_threshold"]         = micThreshSlider_->value();
+        o["rx_led_threshold"]          = rxThreshSlider_->value();
+        o["vad_led_prob_threshold"]    = vadThreshSlider_->value();
+        o["aec_led_reduction_pct"]     = aecThreshSlider_->value();
+        o["rx_guard_vad_boost"]        = rxGuardVadBoostSlider_->value();
+        o["rx_guard_snr_pct"]          = rxGuardSnrSlider_->value();
+        return o;
+    }
+
+    /* Apply a JSON tuning object to the sliders.  Missing fields are
+     * left unchanged (backward-compat: an old file with fewer keys
+     * still loads; only present sliders are overwritten). */
+    void applyTuningJson(const QJsonObject &o)
+    {
+        const int fileVersion = o.value("version").toInt(0);
+        if (fileVersion > kTuningFileVersion) {
+            statusBar()->showMessage(
+                QString("Tuning file is newer (version %1) than this app understands; "
+                        "loading what we recognize.").arg(fileVersion), 5000);
+        }
+
+        auto setIfPresent = [&](const QString &key, QSlider *slider) {
+            if (slider && o.contains(key) && o[key].isDouble())
+                slider->setValue(o[key].toInt());
+        };
+
+        setIfPresent("hang_ms",                   hangSlider_);
+        setIfPresent("mic_led_threshold",         micThreshSlider_);
+        setIfPresent("rx_led_threshold",          rxThreshSlider_);
+        setIfPresent("vad_led_prob_threshold",    vadThreshSlider_);
+        setIfPresent("aec_led_reduction_pct",     aecThreshSlider_);
+        setIfPresent("rx_guard_vad_boost",        rxGuardVadBoostSlider_);
+        setIfPresent("rx_guard_snr_pct",          rxGuardSnrSlider_);
+    }
+
+    bool saveTuningFile(const QString &path)
+    {
+        QJsonDocument doc(captureTuningJson());
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            statusBar()->showMessage(
+                QString("Tuning save failed: %1").arg(f.errorString()), 5000);
+            return false;
+        }
+        f.write(doc.toJson(QJsonDocument::Indented));
+        statusBar()->showMessage(QString("Saved tuning to %1").arg(path), 3000);
+        return true;
+    }
+
+    bool loadTuningFile(const QString &path)
+    {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            statusBar()->showMessage(
+                QString("Tuning load failed: %1").arg(f.errorString()), 5000);
+            return false;
+        }
+        QByteArray bytes = f.readAll();
+        QJsonParseError err{};
+        QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+            statusBar()->showMessage(
+                QString("Tuning file invalid: %1").arg(err.errorString()), 5000);
+            return false;
+        }
+        applyTuningJson(doc.object());
+        statusBar()->showMessage(QString("Loaded tuning from %1").arg(path), 3000);
+        return true;
+    }
+
+    void buildMenuBar()
+    {
+        QMenu *fileMenu = menuBar()->addMenu("&File");
+
+        QAction *saveAct = fileMenu->addAction("&Save Tuning");
+        saveAct->setShortcut(QKeySequence::Save);   /* Ctrl-S */
+        connect(saveAct, &QAction::triggered, this, [this]() {
+            saveTuningFile(defaultTuningPath());
+        });
+
+        QAction *saveAsAct = fileMenu->addAction("Save Tuning &As…");
+        saveAsAct->setShortcut(QKeySequence::SaveAs); /* Ctrl-Shift-S */
+        connect(saveAsAct, &QAction::triggered, this, [this]() {
+            const QString path = QFileDialog::getSaveFileName(
+                this, "Save Tuning As", defaultTuningPath(),
+                "JSON files (*.json);;All files (*)");
+            if (!path.isEmpty())
+                saveTuningFile(path);
+        });
+
+        QAction *loadAct = fileMenu->addAction("&Load Tuning…");
+        loadAct->setShortcut(QKeySequence::Open);   /* Ctrl-O */
+        connect(loadAct, &QAction::triggered, this, [this]() {
+            const QString path = QFileDialog::getOpenFileName(
+                this, "Load Tuning", defaultTuningPath(),
+                "JSON files (*.json);;All files (*)");
+            if (!path.isEmpty())
+                loadTuningFile(path);
+        });
+
+        fileMenu->addSeparator();
+        QAction *quitAct = fileMenu->addAction("&Quit");
+        quitAct->setShortcut(QKeySequence::Quit);   /* Ctrl-Q */
+        connect(quitAct, &QAction::triggered, this, &QMainWindow::close);
+    }
+
     void onTick()
     {
         if (!audio_ || !vox_)
@@ -1003,6 +1172,25 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 
+    // --quit-after-ms <ms> : fire QApplication::quit() after N ms (which
+    // triggers closeEvent and the auto-save path).  Useful for headless
+    // smoke testing the save/load round trip; not exposed in the GUI.
+    int quit_after_ms = 0;
+    QStringList args = app.arguments();
+    for (int i = 1; i < args.size() - 1; i++) {
+        if (args[i] == "--quit-after-ms") {
+            quit_after_ms = args[i + 1].toInt();
+            break;
+        }
+    }
+
+    // Anchor QStandardPaths::AppConfigLocation to ~/.config/vox/ on
+    // Linux (and equivalents on macOS / Windows), independent of where
+    // the binary lives or what it's renamed to.  We deliberately set
+    // only the application name (no organization): with both set, the
+    // path becomes ~/.config/<org>/<app>/, doubling the "vox" segment.
+    QCoreApplication::setApplicationName("vox");
+
     // Force a light palette regardless of the system theme.  The "Fusion"
     // style respects palette settings consistently across desktops; the
     // platform-default style on KDE/GNOME may ignore some role colors.
@@ -1023,6 +1211,12 @@ int main(int argc, char *argv[])
 
     VoxWindow window;
     window.show();
+
+    // Headless test hook: programmatically close the window after N ms.
+    // window.close() goes through closeEvent so the auto-save runs;
+    // app.quit() bypasses it.
+    if (quit_after_ms > 0)
+        QTimer::singleShot(quit_after_ms, &window, &QMainWindow::close);
 
     return app.exec();
 }
