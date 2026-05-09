@@ -13,37 +13,43 @@ Convention:
 
 Last touched: 2026-05-09
 
+User stories that drive the priorities below: [docs/user_stories.md](docs/user_stories.md)
+
 ---
 
-## GUI — vox_qt (Linux sim and, later, dongle client)
+## GUI — vox_qt (Linux sim, dongle client, dev + operator faces)
 
-Architecture: one app, two run modes (sim mode = today; dongle mode =
-post-shield, talks to STM32 over USB CDC).  Both modes share the same
-widget layer; the difference is who produces the per-frame state.
-See `~/.claude/projects/-home-jeff-ham-VOX/memory/gui-one-app-two-modes.md`.
+Architecture: one app, two source modes (sim ↔ dongle) and two faces
+(developer ↔ operator).  Three real combinations: dev-sim, dev-dongle,
+operator-dongle.  Operator face is a *subset* of the dev face — same
+codebase, gated visibility.  See:
+- `~/.claude/projects/-home-jeff-ham-VOX/memory/gui-one-app-two-modes.md`
+- `~/.claude/projects/-home-jeff-ham-VOX/memory/gui-light-mode.md`
+- [docs/user_stories.md](docs/user_stories.md)
 
-### In progress
-- [~] **Scrolling time-series plot** — stacked strips for levels/SNR/VAD/PTT, 30 s window
-  - *Biggest debugging-power-up the GUI could get; lets you see why PTT misfired 3 s ago*
-  - Design agreed (4 stacked panels, dBFS/dB/%/on-off units, ring buffer, ~280 px height)
-  - Next: implement `TimeSeriesPlot` widget in `platform/linux/main_qt.cpp`
+### High priority — unblocks dongle stories
+- [ ] **Dongle protocol header** — `tools/vox_dongle_proto.h` shared between firmware and GUI.  Frame struct (revision + `VoxLedState` + `VoxDebugState` + sequence number), tuning-write opcodes, framing format, "hello" handshake (firmware reports its rev + capability bitset).  Pure design work; unblocks Stories 1, 2, 3, 4.
+- [ ] **Operator-face / Developer-face toggle** — view menu radio that hides advanced widgets (residual plot, debug grid, decision summary, advanced sliders) for Story 3.  All advanced widgets stay in the layout, just hidden.
 
-### Queued (rough priority order)
-- [ ] **Device picker dropdowns in the GUI** — currently the sliders drive `vox_set_tuning` but mic/rx are `auto`-only.  CLI has `-m/-r`, GUI doesn't.
-- [ ] **Tuning save/load to a JSON file** — sliders reset to defaults on every restart; need persistence so "this is my tuning for this radio" survives.
-- [ ] **CSV / JSONL log export** — record button writes per-frame state for offline analysis; complements the plot for multi-minute captures.
-- [ ] **Dongle protocol header** — `tools/vox_dongle_proto.h` shared between firmware and GUI: frame struct (`VoxLedState + VoxDebugState` + sequence number), tuning-write opcodes, framing.  Pure design work; unblocks dongle mode.
-- [ ] **Pause/resume scrolling** in the time-series plot, click to pin a value cursor.
+### Medium priority — sim-only, useful now
+- [ ] **Device picker dropdowns** — currently mic/rx are `auto`-only.  CLI has `-m/-r`, GUI doesn't.  Helps when running the same binary on desktop vs. laptop.
+- [ ] **Tuning save/load to a JSON file** — sliders reset to defaults on every restart.  Operator and developer both want their tuning to survive.
+- [ ] **Snapshot button on the time-series plot** — dump current 30 s of history to CSV for later analysis.  Single click; complements the 10–30 s window with a way to keep "this moment was interesting."
+- [ ] **CSV / JSONL log export** — continuous version of the snapshot button; per-frame state to a file for offline grep / Python analysis.
+- [ ] **Pause / resume scrolling + click-to-pin cursor** in the time-series plot.
+
+### Lower priority — refinements & specialty diagnostics
 - [ ] **Audio waveform / scope mode** — raw mic/rx scope at 8 kHz for diagnosing analog issues before AEC even runs.
 - [ ] **FFT / spectrogram strip** — for finding mains hum, whistles, etc.
-- [ ] **Snapshot button** — capture last 30 s of mic+rx PCM + state to a file when something interesting happens.
 - [ ] **A/B preset compare** — two slots, switch instantly, see PTT decisions diverge.
 - [ ] **Wider slider ranges** — current ranges (e.g. mic threshold 50–4000) might miss some radios.
 
 ### Dongle mode (post-shield, post-USB-CDC firmware)
-- [ ] **Add "connect to dongle" run-mode** to vox_qt: open `/dev/ttyACMx`, parse the protocol frames, render same widgets.
-- [ ] **Bidirectional tuning** — slider moves → write opcode → dongle's `vox_set_tuning` runs on chip.
-- [ ] **PC-audio-over-USB development mode** — pipe live PC mic + speaker-monitor PCM streams from vox_qt over USB CDC to the chip, run `vox_process` on real silicon, return state frames.  Lets us validate the algorithm path on the chip before the analog shield exists.  Bandwidth: 256 kbit/s in + 32 kbit/s out = <3% of USB FS.  CPU: needs slice D PLL up to 150–170 MHz first (HSI16 is borderline-to-impossible for 50 fps speex).
+- [ ] **"Connect to dongle" run-mode** in vox_qt — open `/dev/ttyACMx`, parse protocol frames, render same widgets.  Story 1 (dev-dongle) + Story 2 (review).
+- [ ] **Bidirectional tuning** — slider moves → write opcode → dongle's `vox_set_tuning` runs on chip.  Story 1, Story 3.
+- [ ] **Firmware revision readout** displayed somewhere prominent (status bar?) and on the protocol "hello" handshake.  Stories 1, 2, 4.
+- [ ] **Firmware update path** — design first: STM32 native USB DFU bootloader (BOOT0-driven) vs. in-application update over USB CDC with a small persistent bootloader.  Story 1 + Story 4.
+- [ ] **Test-signal injection over USB CDC** — pipe canned PCM, sine sweep, or live PC audio from vox_qt to the chip; chip runs `vox_process` on the injected signal in place of ADC frames.  Story 1 explicitly calls this out.  Bandwidth: 256 kbit/s in + 32 kbit/s out = <3% of USB FS; CPU: needs slice D's PLL up first.  Useful for validating the algorithm on real silicon before the analog shield exists.
 
 ---
 
@@ -65,18 +71,20 @@ See `~/.claude/projects/-home-jeff-ham-VOX/memory/gui-one-app-two-modes.md`.
 - [ ] **Wire the linker `_min_stack_size = 0x4000` constant** to match the runtime `VOX_HEAP_STACK_GUARD` via a single source so they can't drift apart.
 
 ### Roadmap (future slices, in order)
-- [ ] **Slice D: PLL clock + flash wait states** — run at ~150 MHz instead of 16 MHz HSI.  Required before AEC's FFT load is comfortable in real time.
+- [ ] **Slice D: PLL clock + flash wait states** — run at ~150 MHz instead of 16 MHz HSI.  Required before AEC's FFT load is comfortable in real time, and before any USB-CDC streaming approach (test injection, full-rate state) becomes feasible.
 - [ ] **Slice E: ADC + DMA + decimator** — sample mic/rx at 32 kHz via timer-triggered ADC, DMA into ring, run the existing CIC decimator down to 8 kHz frames.
 - [ ] **Slice F: vox_process on real audio** — swap synthetic input source for the ADC ring (depends on slice C blocker resolved).
-- [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; eventually carries the dongle protocol from the GUI section above.
+- [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; carries the dongle protocol (Stories 1–4 read/write, test injection, FW update).
 - [ ] **Slice H (custom CB only): OPAMP front-end init** — OPAMP1/2/3 cascade + OPAMP4 Vmid follower with the offset calibration sequence documented in `boards/stm32g474_vox_cb/board_pins.h`.
+- [ ] **Slice I: Firmware revision string and capability bits** — embed a `VOX_FIRMWARE_REVISION` constant in flash; emit it on the dongle-protocol "hello" frame.  Stories 1, 2, 4.
+- [ ] **Slice J: In-application FW update** (or DFU jump) — depends on the design choice above.
 
 ---
 
 ## Linux side / build
 
 - [ ] **Newlib stub warnings on cross link** — `_close`/`_fstat`/`_isatty`/`_lseek`/`_read`/`_write` "not implemented and will always fail".  All harmless (gc-sections drops them), but suppress them or provide proper stubs to keep the build log clean.
-- [ ] **`docs/` directory referenced by README.md doesn't exist** — either create it with `user_manual.md` and `design_description.md` stubs, or remove the README references.
+- [ ] **README.md → docs/ stubs** — README references `docs/user_manual.md` and `docs/design_description.md` that don't exist.  Either create them or remove the references.  (`docs/user_stories.md` does exist now.)
 - [ ] **Tests don't cover the new vox_core configuration knobs** (`rx_guard_vad_boost`, `rx_guard_snr_pct`).  Add functional tests.
 
 ---
@@ -101,3 +109,5 @@ forget about them when they intersect with firmware work.
 - [x] Heap (`_sbrk`) + SysTick + 16 KB stack — *done; `vox_create` succeeds on chip*
 - [x] Add `--list-devices` to `vox_linux` for desktop/laptop portability — *done*
 - [x] Delete CubeMx ioc and dead F411 board files — *done*
+- [x] Scrolling time-series plot in vox_qt — *done in commit `82272fc`*
+- [x] Light-mode sweep across all panels in vox_qt — *done in commit `82272fc`*
