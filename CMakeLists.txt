@@ -79,6 +79,18 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# vox_dongle_proto — wire protocol shared by GUI and firmware.
+#
+# Always built — tiny, no external deps, compiles for both host and
+# cross targets.  The header defines packed wire structs and message
+# constants; the .c file implements CRC + framer + parser.
+# ---------------------------------------------------------------------------
+add_library(vox_dongle_proto STATIC
+    tools/vox_dongle_proto.c
+)
+target_include_directories(vox_dongle_proto PUBLIC tools)
+
+# ---------------------------------------------------------------------------
 # Linux simulation executables (host build only)
 # ---------------------------------------------------------------------------
 if(PLATFORM_LINUX)
