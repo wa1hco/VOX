@@ -1,6 +1,16 @@
 build/
+build-*/
 *.o
 *.a
 *.so
 *.raw
 *.zip
+
+# KiCad work-in-progress noise
+hardware/**/_autosave-*
+hardware/**/*-bak
+hardware/**/~*.lck
+hardware/**/#auto_saved_files#
+
+# Local editor / agent state
+.claude/

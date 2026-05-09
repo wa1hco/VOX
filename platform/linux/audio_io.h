@@ -2,6 +2,7 @@
 #define AUDIO_IO_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +32,19 @@ typedef struct {
 AudioIO *audio_io_open(const AudioIOConfig *cfg);
 int audio_io_read(AudioIO *audio, int16_t *mic_out, int16_t *rx_out);
 void audio_io_close(AudioIO *audio);
+
+/*
+ * audio_io_list_devices — enumerate available capture devices to `out`.
+ *
+ * Produces a human-readable listing intended for `vox_linux --list-devices`:
+ *   - PulseAudio sources       (mic candidates for `-m pulse:<source>`)
+ *   - PulseAudio sink monitors (rx candidates for `-r pulse:<monitor>`)
+ *   - ALSA capture devices     (alternate `-m alsa:hw:X,Y` form)
+ *
+ * Returns 0 on success, nonzero if the underlying tools (pactl, arecord)
+ * are missing.  The function never exits; it only prints.
+ */
+int audio_io_list_devices(FILE *out);
 
 #ifdef __cplusplus
 }

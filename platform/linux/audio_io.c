@@ -683,3 +683,123 @@ void audio_io_close(AudioIO *audio)
 
     free(audio);
 }
+
+/* ------------------------------------------------------------------ */
+/* Device enumeration helper for `vox_linux --list-devices`.            */
+/*                                                                       */
+/* Shells out to pactl (pulseaudio-utils) and arecord (alsa-utils) so   */
+/* the listing is what those system tools report — no surprise mismatch */
+/* between what we discover and what the user can verify by hand.       */
+/* ------------------------------------------------------------------ */
+
+static int run_listing(FILE *out, const char *cmd, const char *header,
+                       int (*line_filter)(const char *line, FILE *out))
+{
+    fprintf(out, "\n%s\n", header);
+    for (size_t i = 0; i < strlen(header); i++)
+        fputc('-', out);
+    fputc('\n', out);
+
+    FILE *p = popen(cmd, "r");
+    if (!p) {
+        fprintf(out, "  (could not run: %s)\n", cmd);
+        return -1;
+    }
+
+    char line[1024];
+    int printed = 0;
+    while (fgets(line, sizeof(line), p)) {
+        size_t n = strlen(line);
+        if (n && line[n - 1] == '\n')
+            line[n - 1] = '\0';
+        if (line_filter ? line_filter(line, out) : (fprintf(out, "  %s\n", line) > 0))
+            printed++;
+    }
+    int status = pclose(p);
+    if (status != 0 && printed == 0) {
+        fprintf(out, "  (tool not installed or returned no output)\n");
+        return -1;
+    }
+    if (printed == 0)
+        fprintf(out, "  (none)\n");
+    return 0;
+}
+
+/* pactl emits "<idx>\t<name>\t<driver>\t<sample_spec>\t<state>" per source. */
+static int filter_pulse_mic(const char *line, FILE *out)
+{
+    /* Skip monitor sources here; they're listed separately. */
+    if (strstr(line, ".monitor"))
+        return 0;
+    /* Field 2 is the source name. */
+    const char *p = line;
+    int tabs = 0;
+    while (*p && tabs < 1) {
+        if (*p == '\t') tabs++;
+        p++;
+    }
+    const char *name = p;
+    const char *end = strchr(name, '\t');
+    if (!end) end = name + strlen(name);
+    fprintf(out, "  pulse:%.*s\n", (int)(end - name), name);
+    return 1;
+}
+
+static int filter_pulse_monitor(const char *line, FILE *out)
+{
+    if (!strstr(line, ".monitor"))
+        return 0;
+    const char *p = line;
+    int tabs = 0;
+    while (*p && tabs < 1) {
+        if (*p == '\t') tabs++;
+        p++;
+    }
+    const char *name = p;
+    const char *end = strchr(name, '\t');
+    if (!end) end = name + strlen(name);
+    fprintf(out, "  pulse:%.*s\n", (int)(end - name), name);
+    return 1;
+}
+
+/* arecord -l emits "card N: NAME [LongName], device M: ...".  We extract
+ * card/device pairs and present them as alsa:hw:N,M. */
+static int filter_alsa_card(const char *line, FILE *out)
+{
+    int card = -1, dev = -1;
+    if (sscanf(line, "card %d: %*[^,], device %d:", &card, &dev) == 2) {
+        fprintf(out, "  alsa:hw:%d,%d   (%s)\n", card, dev, line);
+        return 1;
+    }
+    return 0;
+}
+
+int audio_io_list_devices(FILE *out)
+{
+    if (!out)
+        out = stdout;
+
+    fprintf(out,
+        "Audio capture devices visible to vox_linux\n"
+        "==========================================\n"
+        "Pass any of the strings below as -m <mic_device> or -r <rx_device>.\n"
+        "Default (-m auto / -r auto) selects the system default mic and the\n"
+        "monitor source of the system default sink.\n");
+
+    int rc = 0;
+    rc |= run_listing(out,
+        "pactl list short sources 2>/dev/null",
+        "PulseAudio sources (mic candidates)",
+        filter_pulse_mic);
+    rc |= run_listing(out,
+        "pactl list short sources 2>/dev/null",
+        "PulseAudio sink monitors (RX-reference candidates)",
+        filter_pulse_monitor);
+    rc |= run_listing(out,
+        "arecord -l 2>/dev/null",
+        "ALSA capture devices",
+        filter_alsa_card);
+
+    fputc('\n', out);
+    return rc;
+}

@@ -9,10 +9,16 @@ extern "C" {
 
 /*
  * MCU frontend sample-rate plan:
- * - ADC sampling runs at 32 MHz for easier analog anti-alias filter design.
+ * - ADC sampling runs at 32 kHz (4x oversampled relative to DSP rate).
+ *   The 4x oversample gives the analog anti-alias filter an easier job:
+ *   audio passband to ~4 kHz, AAF rolls off before 16 kHz Nyquist.
+ *   That fits a simple single-pole RC + opamp, no sharp filter needed.
+ * - CIC decimates by 4 down to the DSP rate.  At factor 4 the 2-stage
+ *   CIC gain is R^N = 16, which keeps the integrator math comfortably
+ *   inside int32 even with 16-bit ADC input.
  * - VOX DSP (AEC/VAD) runs at 8 kHz.
  */
-#define VOX_MCU_ADC_SAMPLE_RATE_HZ 32000000u
+#define VOX_MCU_ADC_SAMPLE_RATE_HZ 32000u
 #define VOX_MCU_DSP_SAMPLE_RATE_HZ 8000u
 #define VOX_MCU_DECIMATION_FACTOR (VOX_MCU_ADC_SAMPLE_RATE_HZ / VOX_MCU_DSP_SAMPLE_RATE_HZ)
 

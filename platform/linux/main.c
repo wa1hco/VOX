@@ -28,12 +28,14 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s [options]\n"
+        "  --list-devices  Print available capture devices and exit.\n"
+        "                  Run this once on a new machine to see what the\n"
+        "                  -m / -r device strings should look like here.\n"
         "  -m <device>  Microphone capture device (default: auto)\n"
         "               ALSA: hw:0,0 or alsa:plughw:CARD=PCH,DEV=0\n"
-        "               Pulse source: pulse:alsa_input.pci-...\n"
+        "               Pulse source: pulse:<source_name>\n"
         "  -r <device>  RX reference capture device (default: auto)\n"
-        "               Pulse monitor example:\n"
-        "               pulse:alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\n"
+        "               Pulse monitor: pulse:<sink_name>.monitor\n"
     "  -h <ms>      PTT hang time in ms      (default: %d)\n"
     "  -M <level>   MIC LED threshold        (default: %d)\n"
     "  -R <level>   RX LED threshold         (default: %d)\n"
@@ -64,7 +66,11 @@ int main(int argc, char *argv[])
     int rx_guard_snr_pct = DEFAULT_RX_GUARD_SNR_PCT;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-m") == 0 && i + 1 < argc)
+        if (strcmp(argv[i], "--list-devices") == 0) {
+            audio_io_list_devices(stdout);
+            return 0;
+        }
+        else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc)
             mic_dev = argv[++i];
         else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
             rx_dev = argv[++i];

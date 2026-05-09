@@ -1,9 +1,16 @@
 #ifndef VOX_MCU_PINS_H
 #define VOX_MCU_PINS_H
 
-#include <stdint.h>
+/*
+ * vox_mcu_pins.h — Generic GPIO pin encoding layer.
+ *
+ * Provides VOX_PIN(port, pin) and associated port constants for encoding
+ * a GPIO port+pin index into a single uint8_t.  Board-specific pin map
+ * headers (e.g. vox_pins_stm32G474CB.h) include this file and use these
+ * macros to define signal assignments without duplicating the encoding logic.
+ */
 
-/* Encoded GPIO pin helper used by board pin maps. */
+#include <stdint.h>
 #define VOX_GPIO_PORT_A 0u
 #define VOX_GPIO_PORT_B 1u
 #define VOX_GPIO_PORT_C 2u

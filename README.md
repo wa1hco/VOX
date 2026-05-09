@@ -74,6 +74,7 @@ By default on Linux desktop systems, `vox_linux` auto-selects:
 - the monitor source of the default speaker sink for `RX`
 
 Options:
+- `--list-devices` — print available capture devices and exit
 - `-m <device>` — microphone capture device (default `auto`)
 - `-r <device>` — receive-reference capture device (default `auto`)
 - `-h <ms>` — PTT hang time in milliseconds (default `500`)
@@ -86,20 +87,16 @@ Device string formats:
 - ALSA: `hw:0,0`, `plughw:CARD=PCH,DEV=0`, `alsa:hw:0,0`
 - Pulse source: `pulse:<source_name>`
 
-Laptop realistic one-command test (mic + speaker playback monitor):
+To pick a specific mic + speaker-monitor pair on the current host, list the
+devices first and copy two strings into `-m` / `-r`:
 
 ```sh
-./vox_linux \
-	-m pulse:alsa_input.pci-0000_00_1f.3.analog-stereo \
-	-r pulse:alsa_output.pci-0000_00_1f.3.analog-stereo.monitor \
-	-h 500
+./vox_linux --list-devices
+./vox_linux -m pulse:<your_mic_source> -r pulse:<your_sink>.monitor -h 500
 ```
 
-You can list available Pulse source names with:
-
-```sh
-pactl list short sources
-```
+The exact source names differ per machine — running across the desktop and
+laptop is expected to give different `-m`/`-r` values.
 
 The Linux runner prints LED transitions:
 - `MIC` LED from raw mic level activity
@@ -120,41 +117,144 @@ Functional tests use synthetic audio. Regression tests load raw audio files from
 ## Project Structure
 
 ```
-src/            Core library: vox.c, aec.c, vad.c
-platform/linux/ Linux ALSA audio and main entry point
-platform/mcu/   MCU board pin maps and MCU integration scaffolding
-tests/          Functional and regression tests
-docs/           User manual and design description
+src/                              Core library: vox.c, aec.c, vad.c
+platform/linux/                   Linux ALSA/Pulse audio + Qt GUI
+platform/mcu/
+  core/                           Platform-independent MCU scaffold
+    vox_mcu_board.h               Pin-config interface (VoxMcuPinConfig)
+    vox_mcu_pins.h                GPIO port/pin uint8 encoding
+    vox_mcu_decimator.{h,c}       32 MHz ADC → 8 kHz DSP CIC decimator
+  boards/
+    common/
+      hco_pin_assignment.h        Shared HCO logical pin map
+    stm32g474_vox_cb/             Custom STM32G474CBT3 board (LQFP48)
+      board_pins.h                LQFP48 pin table + analog-front-end notes
+      board.c                     Pin-config descriptor
+      board.cmake                 Per-board CMake fragment
+    stm32g474_nucleo/             NUCLEO-G474RE + HCO-mirrored shield
+      board_pins.h                LQFP64 pin table + Nucleo-specific notes
+      board.c
+      board.cmake
+cmake/
+  arm-none-eabi.cmake             ARM cross-compile toolchain file
+tests/                            Functional and regression tests (host)
+docs/                             User manual and design description
 ```
 
-## STM32G474 Setup (Scaffold)
+## MCU builds (STM32G474)
 
-VOX now includes an initial STM32G474 board scaffold using a Rotator-style
-pin definition table. This keeps all board wiring in one header and exposes a
-single pin-config struct for MCU glue code.
+The current MCU firmware is **bring-up only**: it blinks an LED, prints a
+counter once a second on the debug UART, and proves the cross toolchain
++ linker script + flash workflow is alive.  ADC, OPAMP, DMA, USB, and
+the actual VOX algorithm wiring land on top of this in later slices.
 
-ADC/DSP sample-rate plan:
-- ADC front end runs at 32 MHz
-- Decimation factor is 4000
+### Boards supported
+
+- `stm32g474_nucleo` — NUCLEO-G474RE dev board with a prototype shield
+  that mirrors the HCO custom-board pinout.  Bring-up uses the on-board
+  ST-Link VCP (USART2 PA2/PA3 → `/dev/ttyACM0`).
+- `stm32g474_vox_cb` — VOX HCO custom board (STM32G474CBT3, LQFP48).
+  Bring-up uses USART1 PA9/PA10 with an external 3.3V USB-serial adapter.
+
+Both boards share the same logical GPIO assignment via
+`platform/mcu/boards/common/hco_pin_assignment.h`, so most MCU code is
+identical between them.  Per-board files describe the package pinout
+and any board-specific quirks (e.g. on the Nucleo, PA5 also drives the
+on-board LD2 user LED, which is benign — it just mirrors `LED_MIC`).
+
+Sample-rate plan (deferred until ADC driver lands):
+- ADC front end runs at 32 kHz (4x oversampled vs the DSP rate)
+- CIC decimation factor 4 → 8 kHz, gain R²=16 (no overflow concerns)
 - AEC/VAD processing runs at 8 kHz
 
-Key files:
-- `platform/mcu/vox_pins_stm32g474_hco_board_v4.h` — board pin definitions
-- `platform/mcu/vox_mcu_pins.h` — encoded pin helper macros
-- `platform/mcu/vox_mcu_board.h` — pin-config interface
-- `platform/mcu/stm32g474_board.c` — concrete exported pin table
-- `platform/mcu/vox_mcu_decimator.h` + `.c` — ADC decimation frontend (32 MHz to 8 kHz)
-
-Enable the MCU scaffold target:
+### One-time toolchain install (Ubuntu 24.04)
 
 ```sh
-cmake -S . -B build -DPLATFORM_LINUX=ON -DPLATFORM_STM32G474=ON
-cmake --build build
+sudo apt-get update
+sudo apt-get install -y \
+    gcc-arm-none-eabi binutils-arm-none-eabi \
+    libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+    stlink-tools openocd \
+    picocom
 ```
 
-This does not yet include STM32 HAL/LL runtime drivers. It is the first step
-to define and standardize STM32G474 board wiring before adding ADC, GPIO, and
-PTT runtime integration.
+`gcc-arm-none-eabi` is the Cortex-M cross compiler; `stlink-tools`
+provides `st-flash` / `st-info`; `openocd` is an alternative flasher
+and SWD debug bridge; `picocom` is a tiny serial terminal for watching
+UART output (`screen` or `minicom` work too).
+
+After install, sanity-check:
+
+```sh
+arm-none-eabi-gcc --version       # expect 13.2.x
+st-info --probe                   # expect to see a connected ST-Link if Nucleo plugged in
+```
+
+### Build, flash, and watch (Nucleo G474RE)
+
+Plug the Nucleo into USB.  Linux should enumerate two devices:
+- An ST-Link debug interface
+- A USB Mass Storage drive labelled `NODE_G474RE` (for drag-drop flashing)
+- A virtual COM port at `/dev/ttyACM0` (115200 8N1)
+
+Then:
+
+```sh
+# Configure (cross-compile)
+cmake -S . -B build-nucleo \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DBOARD=stm32g474_nucleo
+
+# Build the firmware (.elf + .bin + size report)
+cmake --build build-nucleo
+
+# Flash to the chip via the on-board ST-Link
+cmake --build build-nucleo --target flash
+
+# Open the VCP in another terminal to see "tick=N" lines and confirm life
+picocom -b 115200 /dev/ttyACM0
+#   ↑  Ctrl-A Ctrl-X to quit picocom
+```
+
+Expected output on `/dev/ttyACM0`:
+
+```
+VOX bringup: board=stm32g474_nucleo  sysclk=16MHz (HSI16)
+LD2 (PA5) should be blinking at ~1 Hz.
+tick=0
+tick=1
+tick=2
+...
+```
+
+LD2 (the green LED next to the USER button) blinks at roughly 1 Hz.
+
+### Build and flash (custom STM32G474CBT3 board)
+
+```sh
+cmake -S . -B build-vox-cb \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DBOARD=stm32g474_vox_cb
+cmake --build build-vox-cb
+cmake --build build-vox-cb --target flash    # needs an external SWD probe
+```
+
+There is no on-board ST-Link, so connect an external probe (a Nucleo
+used as ST-Link works) to the SWD pads, and an external 3.3V USB-serial
+adapter to PA9/PA10 to see the `tick=N` output.
+
+### Sanity-check the pin descriptor without a cross toolchain
+
+If you want to verify the board descriptor + decimator compile but
+haven't installed `arm-none-eabi-gcc` yet:
+
+```sh
+cmake -S . -B build-nucleo-host -DBOARD=stm32g474_nucleo
+cmake --build build-nucleo-host --target vox_mcu_board
+```
+
+This builds `libvox_mcu_board.a` with the host gcc — the firmware
+executable is intentionally skipped in this mode.
 
 ## Documentation
 
