@@ -29,7 +29,9 @@
 #include "clock_init.h"
 #include "systick.h"
 #include "synth_audio.h"
+#include "usb/usb_init.h"
 #include "vox.h"
+#include "tusb.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -218,6 +220,7 @@ static void print_state(int phase, const VoxLedState *led, int ptt)
     uart_write(" VAD=");  uart_write_char(led->vad_led ? '1' : '0');
     uart_write(" AEC=");  uart_write_char(led->aec_led ? '1' : '0');
     uart_write(" PTT=");  uart_write_char(ptt          ? '1' : '0');
+    uart_write(" USB=");  uart_write_char(tud_mounted() ? 'Y' : '-');
     uart_write("  mic="); uart_write_i32(led->mic_level);
     uart_write(" rx=");   uart_write_i32(led->rx_level);
     uart_write(" vad%="); uart_write_i32(led->vad_probability);
@@ -291,6 +294,16 @@ int main(void)
     }
     uart_write("vox_create() ok — heap and speexdsp alive.\r\n");
 
+    /* USB CDC-ACM bring-up.  Configures the chip-side peripheral (clock
+     * source, GPIO AF, NVIC), then asks TinyUSB to enumerate as a CDC
+     * device.  When a USB host is connected to PA11/PA12 (CN10 pins 14
+     * and 12 on the Morpho header — the standard NUCLEO-G474RE has no
+     * dedicated USB-user connector), /dev/ttyACMx appears within a
+     * second.  The custom CB board has a proper USB micro-B for this. */
+    vox_usb_init();
+    tud_init(0);
+    uart_write("USB CDC-ACM init ok\r\n");
+
     /* Now safe to enable the 1 ms tick — init's float-heavy paths are done. */
     vox_systick_init(SYSCLK_HZ);
     synth_audio_reset(vox_systick_now_ms());
@@ -303,6 +316,8 @@ int main(void)
     VoxLedState led_prev = {0};
     int ptt_prev = 0;
     uint32_t next_deadline = vox_systick_now_ms();
+    uint32_t last_usb_report_ms = 0;
+    int      last_usb_mounted   = -1;   /* force first transition print */
 
     /* Frame loop — full VOX pipeline at 50 fps.
      *
@@ -319,13 +334,23 @@ int main(void)
      */
     for (;;) {
         next_deadline += VOX_FRAME_MS;
-        while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0)
+        while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0) {
+            /* TinyUSB pumps the device task here too so background
+             * USB events (descriptor requests, set-config, status IN)
+             * still progress while we wait for the next frame slot. */
+            tud_task();
             __asm__ volatile ("wfi");
+        }
 
         uint32_t now = vox_systick_now_ms();
         int phase = synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
 
         int ptt = vox_process(vox, mic, rx);
+
+        /* Service USB once per frame too in case wfi above never woke
+         * us (it does on every SysTick = 1 ms, but belt-and-suspenders
+         * during bring-up). */
+        tud_task();
 
         VoxLedState led = {0};
         vox_get_led_state(vox, &led);
@@ -341,6 +366,20 @@ int main(void)
             print_state(phase, &led, ptt);
             led_prev = led;
             ptt_prev = ptt;
+        }
+
+        /* Print only on USB mount/unmount transition.  A periodic
+         * heartbeat is suppressed when there's no host connected — the
+         * NUCLEO-G474RE has no USB-user connector, so until the chip
+         * is in a board with USB wired to PA11/PA12, this transitions
+         * exactly once at boot (to "not mounted") and stays there. */
+        const int usb_mounted = tud_mounted() ? 1 : 0;
+        if (usb_mounted != last_usb_mounted) {
+            uart_write("USB ");
+            uart_write(usb_mounted ? "MOUNTED — host enumerated us\r\n"
+                                   : "unmounted (no host on PA11/PA12)\r\n");
+            last_usb_mounted = usb_mounted;
+            last_usb_report_ms = vox_systick_now_ms();
         }
     }
 }

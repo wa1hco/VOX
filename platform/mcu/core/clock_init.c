@@ -43,8 +43,8 @@ uint32_t vox_clock_init_pll144(void)
     /* 2. Bump flash wait states to 4 + enable instruction/data caches
      *    + prefetch.  At Range 1 Normal, the table from RM0440 §3.3.3
      *    sets thresholds at 30/60/90/120 MHz; 144 MHz needs 4 WS. */
-    FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_MASK)
-               | FLASH_ACR_LATENCY(4)
+    FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk)
+               | FLASH_ACR_LATENCY_VAL(4)
                | FLASH_ACR_PRFTEN
                | FLASH_ACR_ICEN
                | FLASH_ACR_DCEN;
@@ -58,8 +58,8 @@ uint32_t vox_clock_init_pll144(void)
      *    plus PLLQ=6 driving 48 MHz for the USB peripheral that will
      *    be consumed in slice G. */
     RCC->PLLCFGR = RCC_PLLCFGR_PLLSRC_HSI16
-                 | RCC_PLLCFGR_PLLM(4)
-                 | RCC_PLLCFGR_PLLN(72)
+                 | RCC_PLLCFGR_PLLM_VAL(4)
+                 | RCC_PLLCFGR_PLLN_VAL(72)
                  | RCC_PLLCFGR_PLLR_DIV2 | RCC_PLLCFGR_PLLREN
                  | RCC_PLLCFGR_PLLQ_DIV6 | RCC_PLLCFGR_PLLQEN;
 
@@ -70,8 +70,8 @@ uint32_t vox_clock_init_pll144(void)
     /* 6. Switch SYSCLK source to PLL.  Read-back of SWS to confirm the
      *    switch actually happened — on misconfigured PLLs the hardware
      *    can refuse to switch silently. */
-    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_MASK) | RCC_CFGR_SW_PLL;
-    while ((RCC->CFGR & RCC_CFGR_SWS_MASK) != RCC_CFGR_SWS_PLL) { }
+    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | RCC_CFGR_SW_PLL;
+    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL) { }
 
     return 144000000U;
 }

@@ -23,7 +23,9 @@
 #include "clock_init.h"
 #include "systick.h"
 #include "synth_audio.h"
+#include "usb/usb_init.h"
 #include "vox.h"
+#include "tusb.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -215,6 +217,11 @@ int main(void)
     }
     uart_write("vox_create() ok — heap and speexdsp alive.\r\n");
 
+    /* USB CDC-ACM bring-up. */
+    vox_usb_init();
+    tud_init(0);
+    uart_write("USB CDC-ACM init ok.\r\n");
+
     synth_audio_reset(vox_systick_now_ms());
 
     int16_t mic[VOX_FRAME_SIZE];
@@ -225,13 +232,16 @@ int main(void)
 
     for (;;) {
         next_deadline += VOX_FRAME_MS;
-        while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0)
+        while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0) {
+            tud_task();
             __asm__ volatile ("wfi");
+        }
 
         uint32_t now = vox_systick_now_ms();
         int phase = synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
 
         int ptt = vox_process(vox, mic, rx);
+        tud_task();
 
         VoxLedState led = {0};
         vox_get_led_state(vox, &led);

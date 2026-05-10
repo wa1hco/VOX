@@ -36,8 +36,7 @@ extern int main(void);
 void Default_Handler(void);
 void Reset_Handler(void);
 
-/* Cortex-M4 system handlers — weak so a board's main can override
- * (e.g. SysTick for a tick driver later). */
+/* Cortex-M4 system handlers — weak so a board's main can override. */
 __attribute__((weak, alias("Default_Handler"))) void NMI_Handler(void);
 __attribute__((weak, alias("Default_Handler"))) void HardFault_Handler(void);
 __attribute__((weak, alias("Default_Handler"))) void MemManage_Handler(void);
@@ -48,29 +47,86 @@ __attribute__((weak, alias("Default_Handler"))) void DebugMon_Handler(void);
 __attribute__((weak, alias("Default_Handler"))) void PendSV_Handler(void);
 __attribute__((weak, alias("Default_Handler"))) void SysTick_Handler(void);
 
+/* STM32G4 peripheral IRQs up to and including USB_LP (slot 20).
+ *
+ * Each gets a weak alias to Default_Handler so any of them can be
+ * overridden by simply defining a strong symbol of the same name in
+ * a driver file (TinyUSB does this for USB_LP_IRQHandler via our
+ * usb_irq_glue.c).
+ *
+ * Slots above USB_LP fall through to the linker's automatic zero-pad
+ * (vector table is short of the full ~104 IRQs); adding a real handler
+ * there means extending this list and the table below to match.
+ */
+__attribute__((weak, alias("Default_Handler"))) void WWDG_IRQHandler(void);                /*  0 */
+__attribute__((weak, alias("Default_Handler"))) void PVD_PVM_IRQHandler(void);             /*  1 */
+__attribute__((weak, alias("Default_Handler"))) void RTC_TAMP_LSECSS_IRQHandler(void);     /*  2 */
+__attribute__((weak, alias("Default_Handler"))) void RTC_WKUP_IRQHandler(void);            /*  3 */
+__attribute__((weak, alias("Default_Handler"))) void FLASH_IRQHandler(void);               /*  4 */
+__attribute__((weak, alias("Default_Handler"))) void RCC_IRQHandler(void);                 /*  5 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI0_IRQHandler(void);               /*  6 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI1_IRQHandler(void);               /*  7 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI2_IRQHandler(void);               /*  8 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI3_IRQHandler(void);               /*  9 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI4_IRQHandler(void);               /* 10 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel1_IRQHandler(void);       /* 11 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel2_IRQHandler(void);       /* 12 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel3_IRQHandler(void);       /* 13 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel4_IRQHandler(void);       /* 14 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel5_IRQHandler(void);       /* 15 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel6_IRQHandler(void);       /* 16 */
+__attribute__((weak, alias("Default_Handler"))) void DMA1_Channel7_IRQHandler(void);       /* 17 */
+__attribute__((weak, alias("Default_Handler"))) void ADC1_2_IRQHandler(void);              /* 18 */
+__attribute__((weak, alias("Default_Handler"))) void USB_HP_IRQHandler(void);              /* 19 */
+__attribute__((weak, alias("Default_Handler"))) void USB_LP_IRQHandler(void);              /* 20 */
+
 /*
  * Vector table.  The placement section name (.isr_vector) is matched by
  * the linker script and put at the start of FLASH.  The first word holds
  * the initial stack pointer; the rest are exception/interrupt handler
- * addresses.  More peripheral IRQ slots will be added here over time.
+ * addresses.  Extends through slot 20 (USB_LP); add more slots here when
+ * we need handlers above that.
  */
 __attribute__((section(".isr_vector"), used))
 const void * const g_vector_table[] = {
-    (const void *)&_estack,         /*  0: initial MSP                   */
-    (const void *)Reset_Handler,    /*  1: reset                         */
-    (const void *)NMI_Handler,      /*  2: NMI                           */
-    (const void *)HardFault_Handler,/*  3: hard fault                    */
-    (const void *)MemManage_Handler,/*  4: memory management fault       */
-    (const void *)BusFault_Handler, /*  5: bus fault                     */
-    (const void *)UsageFault_Handler,/* 6: usage fault                   */
-    0, 0, 0, 0,                     /*  7..10: reserved                  */
-    (const void *)SVC_Handler,      /* 11: SVCall                        */
-    (const void *)DebugMon_Handler, /* 12: debug monitor                 */
-    0,                              /* 13: reserved                      */
-    (const void *)PendSV_Handler,   /* 14: PendSV                        */
-    (const void *)SysTick_Handler,  /* 15: SysTick                       */
-    /* peripheral IRQ slots default to Default_Handler — table is padded
-     * by linker if needed.  Add named entries here as drivers land. */
+    /* Cortex-M system handlers (positions 0..15) */
+    (const void *)&_estack,            /*  0: initial MSP                   */
+    (const void *)Reset_Handler,       /*  1: reset                         */
+    (const void *)NMI_Handler,         /*  2: NMI                           */
+    (const void *)HardFault_Handler,   /*  3: hard fault                    */
+    (const void *)MemManage_Handler,   /*  4: memory management fault       */
+    (const void *)BusFault_Handler,    /*  5: bus fault                     */
+    (const void *)UsageFault_Handler,  /*  6: usage fault                   */
+    0, 0, 0, 0,                        /*  7..10: reserved                  */
+    (const void *)SVC_Handler,         /* 11: SVCall                        */
+    (const void *)DebugMon_Handler,    /* 12: debug monitor                 */
+    0,                                 /* 13: reserved                      */
+    (const void *)PendSV_Handler,      /* 14: PendSV                        */
+    (const void *)SysTick_Handler,     /* 15: SysTick                       */
+
+    /* Peripheral IRQs (NVIC IRQn 0..20 → vector slots 16..36) */
+    (const void *)WWDG_IRQHandler,             /* IRQ  0 — slot 16 */
+    (const void *)PVD_PVM_IRQHandler,          /* IRQ  1 — slot 17 */
+    (const void *)RTC_TAMP_LSECSS_IRQHandler,  /* IRQ  2 — slot 18 */
+    (const void *)RTC_WKUP_IRQHandler,         /* IRQ  3 — slot 19 */
+    (const void *)FLASH_IRQHandler,            /* IRQ  4 — slot 20 */
+    (const void *)RCC_IRQHandler,              /* IRQ  5 — slot 21 */
+    (const void *)EXTI0_IRQHandler,            /* IRQ  6 — slot 22 */
+    (const void *)EXTI1_IRQHandler,            /* IRQ  7 — slot 23 */
+    (const void *)EXTI2_IRQHandler,            /* IRQ  8 — slot 24 */
+    (const void *)EXTI3_IRQHandler,            /* IRQ  9 — slot 25 */
+    (const void *)EXTI4_IRQHandler,            /* IRQ 10 — slot 26 */
+    (const void *)DMA1_Channel1_IRQHandler,    /* IRQ 11 — slot 27 */
+    (const void *)DMA1_Channel2_IRQHandler,    /* IRQ 12 — slot 28 */
+    (const void *)DMA1_Channel3_IRQHandler,    /* IRQ 13 — slot 29 */
+    (const void *)DMA1_Channel4_IRQHandler,    /* IRQ 14 — slot 30 */
+    (const void *)DMA1_Channel5_IRQHandler,    /* IRQ 15 — slot 31 */
+    (const void *)DMA1_Channel6_IRQHandler,    /* IRQ 16 — slot 32 */
+    (const void *)DMA1_Channel7_IRQHandler,    /* IRQ 17 — slot 33 */
+    (const void *)ADC1_2_IRQHandler,           /* IRQ 18 — slot 34 */
+    (const void *)USB_HP_IRQHandler,           /* IRQ 19 — slot 35 */
+    (const void *)USB_LP_IRQHandler,           /* IRQ 20 — slot 36 */
+    /* IRQs above 20 zero-pad implicitly (no slot here = handler unreachable) */
 };
 
 void Reset_Handler(void)

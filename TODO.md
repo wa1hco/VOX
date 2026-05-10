@@ -62,6 +62,8 @@ codebase, gated visibility.  See:
 - [ ] **Wire the linker `_min_stack_size = 0x4000` constant** to match the runtime `VOX_HEAP_STACK_GUARD` via a single source so they can't drift apart.
 
 ### Roadmap (future slices, in order)
+
+- [~] **Slice G: USB CDC-ACM** — code in tree; chip-side bring-up confirmed (USBEN, CLK48SEL=PLLQ, PLLRDY, DPPU all OK on the Nucleo). NUCLEO-G474RE has no USB-user connector; PA11/PA12 only come out on Morpho header CN10 (pins 14, 12). Enumeration test pending one of: bench-wire a USB-A cable to the Morpho header, or wait for the custom CB board which has a proper USB micro-B wired to PA11/PA12. See memory:mcu-usb-enumeration-pending.md.
 - [ ] **Slice E: ADC + DMA + decimator** — sample mic/rx at 32 kHz via timer-triggered ADC, DMA into ring, run the existing CIC decimator down to 8 kHz frames.
 - [ ] **Slice F: vox_process on real audio** — swap synthetic input source for the ADC ring (depends on slice C blocker resolved).
 - [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; carries the dongle protocol (Stories 1–4 read/write, test injection, FW update).

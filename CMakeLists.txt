@@ -79,6 +79,17 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# CMSIS + TinyUSB — only needed by the cross build.  The host doesn't
+# compile any of the chip code, so dragging them in there would be
+# wasted FetchContent.
+# ---------------------------------------------------------------------------
+if(CMAKE_CROSSCOMPILING)
+    include(${CMAKE_SOURCE_DIR}/cmake/CmsisStm32g4.cmake)
+    set(TUSB_CONFIG_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/platform/mcu/core/usb)
+    include(${CMAKE_SOURCE_DIR}/cmake/TinyUSB.cmake)
+endif()
+
+# ---------------------------------------------------------------------------
 # vox_dongle_proto — wire protocol shared by GUI and firmware.
 #
 # Always built — tiny, no external deps, compiles for both host and
@@ -183,6 +194,9 @@ if(NOT BOARD STREQUAL "")
             platform/mcu/core/clock_init.c
             platform/mcu/core/systick.c
             platform/mcu/core/synth_audio.c
+            platform/mcu/core/usb/usb_init.c
+            platform/mcu/core/usb/usb_descriptors.c
+            platform/mcu/core/usb/usb_irq_glue.c
             ${VOX_BOARD_MAIN_SOURCES}
         )
         target_include_directories(${_VOX_FW_NAME} PRIVATE
@@ -194,10 +208,13 @@ if(NOT BOARD STREQUAL "")
         # speexdsp_static is also explicit so main.c's bring-up diagnostic
         # prints can reach <speex/...> headers directly; remove this once
         # the diagnostics aren't needed.
+        # cmsis_stm32g4 (INTERFACE) supplies <stm32g474xx.h> + <core_cm4.h>.
         target_link_libraries(${_VOX_FW_NAME} PRIVATE
             vox_mcu_board
             vox_core
             speexdsp_static
+            cmsis_stm32g4
+            tinyusb_dcd_stm32g4
         )
 
         # Use the board's linker script and produce a .map file alongside
