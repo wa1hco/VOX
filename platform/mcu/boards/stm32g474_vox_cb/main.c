@@ -202,6 +202,7 @@ int main(void)
         .aec_led_reduction_pct  = 20,
         .rx_guard_vad_boost     = 15,
         .rx_guard_snr_pct       = 145,
+        .aec_filter_frames      = 4,    /* see memory:mcu-aec-tail-bug.md */
     };
     VoxState *vox = vox_create(&vc);
     if (!vox) {

@@ -30,6 +30,11 @@ typedef struct {
     int aec_led_reduction_pct;   /* AEC reduction threshold percent, default 20 */
     int rx_guard_vad_boost;      /* extra VAD threshold while RX active, default 15 */
     int rx_guard_snr_pct;        /* min SNR%% while RX active, default 145 */
+    int aec_filter_frames;       /* AEC adaptive-filter tail in 20 ms blocks.
+                                    0 (default) → 16 (320 ms tail).  Set
+                                    smaller (e.g. 4 = 80 ms) on memory-tight
+                                    targets — speexdsp on cortex-m4f
+                                    corrupts heap with the default tail. */
 } VoxConfig;
 
 typedef struct {

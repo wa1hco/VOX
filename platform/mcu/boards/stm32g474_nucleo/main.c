@@ -43,6 +43,27 @@
 extern void *_sbrk(int incr);
 extern uint32_t _heap_start;
 
+/* ---- FFT-direction probe internals -----------------------------------
+ * speexdsp doesn't expose spx_fft_init in any public header.  We
+ * declare it manually here for the probe; the symbol is in the
+ * libspeexdsp_static archive we link, so the linker resolves it.
+ * Layouts shadowed below match the speexdsp 1.2.1 source.  This is
+ * diagnostic-only code; if speex's struct order changes, the probe
+ * needs to be updated by hand.
+ */
+extern void *spx_fft_init(int size);
+
+/* struct kiss_config { kiss_fftr_cfg forward; kiss_fftr_cfg backward; int N; }
+ * — fftwrap.c (USE_KISS_FFT path).  forward/backward are pointers, so
+ * offset 0/1 of a void** view of the kiss_config struct.
+ */
+/* struct kiss_fftr_state { kiss_fft_cfg substate; kiss_fft_cpx *tmpbuf; ... }
+ * — kiss_fftr.h.  substate is a pointer at offset 0.
+ */
+/* struct kiss_fft_state { int nfft; int inverse; int factors[...]; ... }
+ * — kiss_fft.h.  nfft at offset 0, inverse at offset 4.
+ */
+
 #define SYSCLK_HZ       16000000U      /* HSI16 default; PLL comes later */
 #define UART_BAUD       115200U
 #define VOX_SAMPLE_RATE 8000
@@ -230,7 +251,14 @@ int main(void)
     uart_write("Synthetic scenario: silence | RX-only | mic-only | mic+RX, 1s each.\r\n");
 
     /* Bring up vox_core.  speex_echo_state_init + speex_preprocess_state_init
-     * malloc internally — that's the first real exercise of our _sbrk. */
+     * malloc internally — that's the first real exercise of our _sbrk.
+     *
+     * aec_filter_frames=4 (80 ms tail) is required on this target —
+     * the host default of 16 (320 ms) reliably stomps the preprocess
+     * state's heap region during speex_echo_cancellation.  Reproduced
+     * deterministically in pure speex API (no vox_core involvement);
+     * see memory:mcu-aec-tail-bug.md.
+     */
     uart_write("heap_start=");
     uart_write_u32((uint32_t)&_heap_start);
     uart_write(" calling vox_create...\r\n");
@@ -244,6 +272,7 @@ int main(void)
         .aec_led_reduction_pct  = 20,
         .rx_guard_vad_boost     = 15,
         .rx_guard_snr_pct       = 145,
+        .aec_filter_frames      = 4,
     };
     VoxState *vox = vox_create(&vc);
     if (!vox) {
@@ -265,74 +294,43 @@ int main(void)
     int ptt_prev = 0;
     uint32_t next_deadline = vox_systick_now_ms();
 
-    /*
-     * KNOWN ISSUE — slice C, vox_process disabled for now.
+    /* Frame loop — full VOX pipeline at 50 fps.
      *
-     * The first call to vox_process() reliably trips a fatal-error
-     * path inside speexdsp 1.2.1: kiss_fftr2() finds its forward FFT
-     * config has substate->inverse == 1 (i.e. it's actually a backward
-     * config).  Stack frames at the trap show
-     *   preprocess_analysis -> spx_fft -> kiss_fftr2 -> _speex_fatal -> exit
+     * Slice C complete: synth_audio fills mic+rx, vox_process runs
+     * AEC + VAD + state machine, GPIO writes drive the 5 LEDs and
+     * PTT_OUT, UART prints scenario phase + LED state on transitions
+     * (mirrors vox_linux's logging style).
      *
-     * What we ruled out:
-     *   - heap exhaustion (malloc(40000) succeeds; vox_create allocs
-     *     ~50 KB and finishes cleanly)
-     *   - stack overflow during init (16 KB stack reserved; raising
-     *     it didn't change the symptom)
-     *   - VAR_ARRAYS / USE_ALLOCA confusion (removing both didn't help)
-     *   - SysTick interrupting FPU context (deferring SysTick init
-     *     until after vox_create didn't help)
-     *   - synthetic audio causing NaN/Inf into speex (all-zeros input
-     *     produces the same crash on the first vox_process call)
-     *   - optimization level (still fails at -O2)
-     *
-     * What we have not yet tried:
-     *   - FIXED_POINT speexdsp instead of FLOATING_POINT
-     *     (avoids FPU entirely; would isolate FPU/lazy-stacking bugs)
-     *   - newer gcc-arm-none-eabi (current: 13.2.1)
-     *   - inspecting t->forward->substate->inverse via openocd to see
-     *     whether it's wrong from the moment spx_fft_init returns or
-     *     gets corrupted later
-     *
-     * For now, the firmware exercises the rest of the chain (heap,
-     * SysTick, GPIO, UART, scenario player) at a 20 ms cadence so we
-     * have a stable baseline to bisect from.  vox_process gets wired
-     * back in once the FFT-direction trap is understood.
+     * The previous "FFT direction trap" block comment here documented
+     * an apparent crash in kiss_fftr2; that turned out to be heap
+     * corruption from the AEC adaptive-filter tail at M=16 stomping the
+     * preprocess state.  Working around it via VoxConfig.aec_filter_frames=4
+     * (passed in vc above).  See memory:mcu-aec-tail-bug.md.
      */
-    uint32_t frame_n = 0;
-    int blink = 0;
     for (;;) {
         next_deadline += VOX_FRAME_MS;
         while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0)
             __asm__ volatile ("wfi");
 
-        frame_n++;
         uint32_t now = vox_systick_now_ms();
         int phase = synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
-        (void)phase;
 
-        /* TODO: restore vox_process once the speexdsp FFT-direction
-         * trap is resolved.  See block comment above for details. */
+        int ptt = vox_process(vox, mic, rx);
 
-        if ((frame_n % 50) == 0) {                /* every second */
-            blink = !blink;
-            gpio_write(cfg->pin_led_ptt, blink);
-            uart_write("alive n="); uart_write_u32(frame_n);
-            uart_write(" ms="); uart_write_u32(now);
-            uart_write(" phase="); uart_write_u32((uint32_t)phase);
-            uart_write(" mic_avg=");
-            int32_t s = 0;
-            for (int i = 0; i < VOX_FRAME_SIZE; i++)
-                s += mic[i] < 0 ? -mic[i] : mic[i];
-            uart_write_u32((uint32_t)(s / VOX_FRAME_SIZE));
-            uart_write(" rx_avg=");
-            s = 0;
-            for (int i = 0; i < VOX_FRAME_SIZE; i++)
-                s += rx[i] < 0 ? -rx[i] : rx[i];
-            uart_write_u32((uint32_t)(s / VOX_FRAME_SIZE));
-            uart_write("\r\n");
+        VoxLedState led = {0};
+        vox_get_led_state(vox, &led);
+
+        gpio_write(cfg->pin_led_mic, led.mic_led);
+        gpio_write(cfg->pin_led_rx,  led.rx_led);
+        gpio_write(cfg->pin_led_vad, led.vad_led);
+        gpio_write(cfg->pin_led_aec, led.aec_led);
+        gpio_write(cfg->pin_led_ptt, ptt);
+        gpio_write(cfg->pin_ptt_out, ptt);
+
+        if (led_state_changed(&led, &led_prev, ptt, ptt_prev)) {
+            print_state(phase, &led, ptt);
+            led_prev = led;
+            ptt_prev = ptt;
         }
-
-        (void)led_prev; (void)ptt_prev;
     }
 }

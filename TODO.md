@@ -53,15 +53,8 @@ codebase, gated visibility.  See:
 
 ## MCU firmware
 
-### Blocker (slice C completion)
-- [ ] **FFT-direction trap in `vox_process`** — speexdsp's `kiss_fftr2` finds `t->forward->substate->inverse == 1` on first call.  Stack:
-  `preprocess_analysis → spx_fft → kiss_fftr2 → speex_fatal → exit → _exit`.
-  Diagnostic context preserved in the long block comment at the disabled `vox_process` site in `platform/mcu/boards/stm32g474_nucleo/main.c`.
-  Things to try, roughly cheapest first:
-  - [ ] Inspect `t->forward->substate->inverse` via openocd at the moment `vox_create` returns (tells us whether the field is wrong from init or gets corrupted later)
-  - [ ] Try `FIXED_POINT` speexdsp instead of `FLOATING_POINT` (sidesteps FPU entirely; if it works, points to FPU/lazy-stacking)
-  - [ ] Try newer `gcc-arm-none-eabi` (current 13.2.1; 14.x is out)
-  - [ ] Bisect by reducing AEC tail / preprocess complexity to see at what point it stops failing
+### AEC-tail bug follow-up (slice C resolved with workaround)
+- [ ] **Root-cause speex AEC heap stomp at M=16** — the workaround is `VoxConfig.aec_filter_frames=4` on MCU (memory:mcu-aec-tail-bug.md), but the underlying speex bug isn't isolated yet.  Likely a heap overrun in mdf.c with cortex-m4f / newlib-nano malloc layout.  Fixing it would let MCU use the same 320 ms tail Linux uses.  Low priority — M=4 is fine for headset/close-mic radio installs.
 
 ### Bring-up nice-to-haves
 - [ ] **Replace busy-wait `delay_ms` with `vox_delay_ms`** in any old bring-up code paths (slice C uses SysTick already; bring-up firmware predated it).
@@ -112,3 +105,4 @@ forget about them when they intersect with firmware work.
 - [x] User stories captured + dongle protocol header design — *done in commits `e326551`, `15a2801`*
 - [x] Tuning save/load JSON in vox_qt — *done; ~/.config/vox/tuning.json, auto-load, auto-save*
 - [x] Device picker dropdowns in vox_qt — *done; mic + rx combos, Refresh button, persisted in tuning.json, falls back to auto if a saved device disappeared*
+- [x] Slice C: vox_process running on chip — *done; 4-phase synthetic scenario drives 5 LEDs + PTT correctly on Nucleo.  Bug was speex AEC at M=16 stomping preprocess heap; workaround is VoxConfig.aec_filter_frames=4 (memory:mcu-aec-tail-bug.md).*

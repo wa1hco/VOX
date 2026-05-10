@@ -71,8 +71,16 @@ VoxState *vox_create(const VoxConfig *cfg)
     if (!vox)
         return NULL;
 
-    /* AEC tail length tuned for speaker-in-room leakage paths. */
-    int filter_len = cfg->frame_size * AEC_FILTER_FRAMES;
+    /* AEC tail length.  Default of AEC_FILTER_FRAMES (16) gives ~320 ms
+     * tail at 8 kHz — good for room/speaker echo on Linux.  Embedded
+     * targets that have hit speexdsp heap corruption at the large tail
+     * can pass cfg->aec_filter_frames > 0 to override (M=4 = 80 ms is
+     * known-good on the STM32G474 cross build).  See memory:
+     * mcu-aec-tail-bug.md. */
+    int filter_frames = (cfg->aec_filter_frames > 0)
+                        ? cfg->aec_filter_frames
+                        : AEC_FILTER_FRAMES;
+    int filter_len = cfg->frame_size * filter_frames;
 
     vox->aec = aec_create(cfg->frame_size, filter_len, cfg->sample_rate);
     vox->vad = vad_create(cfg->frame_size, cfg->sample_rate);
