@@ -180,6 +180,7 @@ if(NOT BOARD STREQUAL "")
 
         add_executable(${_VOX_FW_NAME}
             platform/mcu/core/startup_stm32g474.c
+            platform/mcu/core/clock_init.c
             platform/mcu/core/systick.c
             platform/mcu/core/synth_audio.c
             ${VOX_BOARD_MAIN_SOURCES}

@@ -26,6 +26,7 @@
 #include "stm32g4_min.h"
 #include "vox_mcu_pins.h"
 #include "vox_mcu_board.h"
+#include "clock_init.h"
 #include "systick.h"
 #include "synth_audio.h"
 #include "vox.h"
@@ -64,7 +65,10 @@ extern void *spx_fft_init(int size);
  * — kiss_fft.h.  nfft at offset 0, inverse at offset 4.
  */
 
-#define SYSCLK_HZ       16000000U      /* HSI16 default; PLL comes later */
+/* Set by vox_clock_init_pll144() at boot.  HCLK = PCLK1 = PCLK2 = this
+ * value (AHB/APB prescalers all at /1).  USART BRR and SysTick reload
+ * pull from this same constant so they track together. */
+#define SYSCLK_HZ       144000000U
 #define UART_BAUD       115200U
 #define VOX_SAMPLE_RATE 8000
 #define VOX_FRAME_MS    20
@@ -234,6 +238,12 @@ static int led_state_changed(const VoxLedState *a, const VoxLedState *b, int ptt
 
 int main(void)
 {
+    /* Clock first — at 16 MHz HSI16 every subsequent timing constant
+     * (UART baud, SysTick reload) would have to be recomputed if the
+     * caller ever lowers/raises SYSCLK.  Doing it here lets the rest
+     * of main() use SYSCLK_HZ as a static truth. */
+    (void)vox_clock_init_pll144();
+
     /* Order matters: GPIO/UART must be alive before we try to print
      * any "vox_create failed" diagnostic from the heap path. */
     const VoxMcuPinConfig *cfg = vox_mcu_get_pin_config();
@@ -247,7 +257,7 @@ int main(void)
      * is done we enable the tick for the frame loop. */
 
     uart_write("\r\n");
-    uart_write("VOX slice-C: board=stm32g474_nucleo  sysclk=16MHz  fs=8kHz frame=20ms\r\n");
+    uart_write("VOX slice-D: board=stm32g474_nucleo  sysclk=144MHz  fs=8kHz frame=20ms\r\n");
     uart_write("Synthetic scenario: silence | RX-only | mic-only | mic+RX, 1s each.\r\n");
 
     /* Bring up vox_core.  speex_echo_state_init + speex_preprocess_state_init

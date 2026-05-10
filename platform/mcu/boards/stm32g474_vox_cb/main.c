@@ -20,6 +20,7 @@
 #include "stm32g4_min.h"
 #include "vox_mcu_pins.h"
 #include "vox_mcu_board.h"
+#include "clock_init.h"
 #include "systick.h"
 #include "synth_audio.h"
 #include "vox.h"
@@ -28,7 +29,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#define SYSCLK_HZ       16000000U
+/* Set by vox_clock_init_pll144() at boot. */
+#define SYSCLK_HZ       144000000U
 #define UART_BAUD       115200U
 #define VOX_SAMPLE_RATE 8000
 #define VOX_FRAME_MS    20
@@ -182,6 +184,8 @@ static int led_state_changed(const VoxLedState *a, const VoxLedState *b, int ptt
 
 int main(void)
 {
+    (void)vox_clock_init_pll144();   /* SYSCLK 16 MHz HSI → 144 MHz PLL */
+
     const VoxMcuPinConfig *cfg = vox_mcu_get_pin_config();
 
     gpio_init(cfg);
@@ -189,7 +193,7 @@ int main(void)
     vox_systick_init(SYSCLK_HZ);
 
     uart_write("\r\n");
-    uart_write("VOX slice-C: board=stm32g474_vox_cb  sysclk=16MHz  fs=8kHz frame=20ms\r\n");
+    uart_write("VOX slice-D: board=stm32g474_vox_cb  sysclk=144MHz  fs=8kHz frame=20ms\r\n");
     uart_write("Synthetic scenario: silence | RX-only | mic-only | mic+RX, 1s each.\r\n");
 
     VoxConfig vc = {

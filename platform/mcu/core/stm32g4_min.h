@@ -72,6 +72,61 @@ typedef struct {
 #define RCC_APB2ENR_SYSCFGEN (1U << 0)
 #define RCC_APB2ENR_USART1EN (1U << 14)
 
+/* RCC->CR bits used during PLL bring-up. */
+#define RCC_CR_HSION   (1U << 8)
+#define RCC_CR_HSIRDY  (1U << 10)
+#define RCC_CR_PLLON   (1U << 24)
+#define RCC_CR_PLLRDY  (1U << 25)
+
+/* RCC->CFGR — system clock switch.  SW selects, SWS reads back. */
+#define RCC_CFGR_SW_HSI    (0x1U << 0)
+#define RCC_CFGR_SW_PLL    (0x3U << 0)
+#define RCC_CFGR_SW_MASK   (0x3U << 0)
+#define RCC_CFGR_SWS_HSI   (0x1U << 2)
+#define RCC_CFGR_SWS_PLL   (0x3U << 2)
+#define RCC_CFGR_SWS_MASK  (0x3U << 2)
+
+/* RCC->PLLCFGR fields (RM0440 §7.4.4).
+ * The "stored value" of PLLM is (M-1) since the field encodes 0..15 → 1..16.
+ * PLLN stores N directly (8..127).
+ * PLLR/PLLQ are 2-bit dividers with the encoding: 00=/2, 01=/4, 10=/6, 11=/8.
+ */
+#define RCC_PLLCFGR_PLLSRC_HSI16  (0x2U << 0)
+#define RCC_PLLCFGR_PLLSRC_HSE    (0x3U << 0)
+#define RCC_PLLCFGR_PLLM(m)       (((uint32_t)((m) - 1) & 0xFU) << 4)
+#define RCC_PLLCFGR_PLLN(n)       (((uint32_t)(n) & 0x7FU) << 8)
+#define RCC_PLLCFGR_PLLPEN        (1U << 16)
+#define RCC_PLLCFGR_PLLQEN        (1U << 20)
+#define RCC_PLLCFGR_PLLQ_DIV2     (0x0U << 21)
+#define RCC_PLLCFGR_PLLQ_DIV4     (0x1U << 21)
+#define RCC_PLLCFGR_PLLQ_DIV6     (0x2U << 21)
+#define RCC_PLLCFGR_PLLQ_DIV8     (0x3U << 21)
+#define RCC_PLLCFGR_PLLREN        (1U << 24)
+#define RCC_PLLCFGR_PLLR_DIV2     (0x0U << 25)
+#define RCC_PLLCFGR_PLLR_DIV4     (0x1U << 25)
+#define RCC_PLLCFGR_PLLR_DIV6     (0x2U << 25)
+#define RCC_PLLCFGR_PLLR_DIV8     (0x3U << 25)
+
+/* ---------- Embedded Flash interface (FLASH_ACR) --------------------- */
+/*
+ * We only ever touch FLASH_ACR — to set the wait-state count + enable
+ * caches/prefetch — so the rest of the FLASH register file is not
+ * declared here.  When/if we add an in-application updater (slice J),
+ * extend this block.
+ */
+typedef struct {
+    __IO ACR;           /* 0x00 access control: latency, cache enables */
+} FLASH_TypeDef;
+
+#define FLASH_BASE              0x40022000UL
+#define FLASH                   ((FLASH_TypeDef *)FLASH_BASE)
+
+#define FLASH_ACR_LATENCY_MASK  (0xFU << 0)
+#define FLASH_ACR_LATENCY(n)    ((uint32_t)(n) & 0xFU)
+#define FLASH_ACR_PRFTEN        (1U << 8)
+#define FLASH_ACR_ICEN          (1U << 9)
+#define FLASH_ACR_DCEN          (1U << 10)
+
 /* ---------- General Purpose I/O (GPIO) -------------------------------- */
 
 typedef struct {

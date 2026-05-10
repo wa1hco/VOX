@@ -62,7 +62,6 @@ codebase, gated visibility.  See:
 - [ ] **Wire the linker `_min_stack_size = 0x4000` constant** to match the runtime `VOX_HEAP_STACK_GUARD` via a single source so they can't drift apart.
 
 ### Roadmap (future slices, in order)
-- [ ] **Slice D: PLL clock + flash wait states** — run at ~150 MHz instead of 16 MHz HSI.  Required before AEC's FFT load is comfortable in real time, and before any USB-CDC streaming approach (test injection, full-rate state) becomes feasible.
 - [ ] **Slice E: ADC + DMA + decimator** — sample mic/rx at 32 kHz via timer-triggered ADC, DMA into ring, run the existing CIC decimator down to 8 kHz frames.
 - [ ] **Slice F: vox_process on real audio** — swap synthetic input source for the ADC ring (depends on slice C blocker resolved).
 - [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; carries the dongle protocol (Stories 1–4 read/write, test injection, FW update).
@@ -106,3 +105,4 @@ forget about them when they intersect with firmware work.
 - [x] Tuning save/load JSON in vox_qt — *done; ~/.config/vox/tuning.json, auto-load, auto-save*
 - [x] Device picker dropdowns in vox_qt — *done; mic + rx combos, Refresh button, persisted in tuning.json, falls back to auto if a saved device disappeared*
 - [x] Slice C: vox_process running on chip — *done; 4-phase synthetic scenario drives 5 LEDs + PTT correctly on Nucleo.  Bug was speex AEC at M=16 stomping preprocess heap; workaround is VoxConfig.aec_filter_frames=4 (memory:mcu-aec-tail-bug.md).*
+- [x] Slice D: PLL clock — *done; 144 MHz SYSCLK from HSI16 (PLLM=4, PLLN=72, PLLR=2, PLLQ=6 reserved for future USB at 48 MHz).  Range 1 Normal voltage; 4 flash WS.  Algorithm output identical to 16 MHz run.*
