@@ -11,6 +11,7 @@ hardware/**/_autosave-*
 hardware/**/*-bak
 hardware/**/~*.lck
 hardware/**/#auto_saved_files#
+hardare/**/fp-info-cache
 
 # Local editor / agent state
 .claude/
