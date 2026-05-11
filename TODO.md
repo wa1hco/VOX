@@ -69,7 +69,7 @@ codebase, gated visibility.  See:
 - [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; carries the dongle protocol (Stories 1–4 read/write, test injection, FW update).
 - [ ] **Slice H (custom CB only): OPAMP front-end init** — OPAMP1/2/3 cascade + OPAMP4 Vmid follower with the offset calibration sequence documented in `boards/stm32g474_vox_cb/board_pins.h`.
 - [ ] **Slice I: Firmware revision string and capability bits** — embed a `VOX_FIRMWARE_REVISION` constant in flash; emit it on the dongle-protocol "hello" frame.  Stories 1, 2, 4.
-- [ ] **Slice J: In-application FW update** (or DFU jump) — depends on the design choice above.
+- [ ] **Slice J: FW update via ROM-bootloader soft-jump** — see [docs/firmware_update.md](docs/firmware_update.md) for the full design.  Firmware-side is ~30 lines (`platform/mcu/core/fw_update.c` with `vox_enter_rom_bootloader()`); host-side is a `FirmwareUpdater` class in vox_qt that orchestrates SET_MODE → wait-for-DFU → dfu-util → wait-for-app → resume.  Uses ST's ROM bootloader at 0x1FFF0000 + dfu-util on the host; we do not write our own in-app updater.  Story 1 + Story 4.
 
 ---
 

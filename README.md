@@ -258,8 +258,21 @@ executable is intentionally skipped in this mode.
 
 ## Documentation
 
-- `docs/user_manual.md` — installation and operation
-- `docs/design_description.md` — architecture and algorithm details
+Design docs (in `docs/`):
+
+- [user_stories.md](docs/user_stories.md) — the four user stories the
+  app needs to serve (developer + operator faces)
+- [dongle_protocol.md](docs/dongle_protocol.md) — wire protocol
+  between vox_qt and the dongle firmware (frame format, message
+  catalog, capability bits)
+- [firmware_update.md](docs/firmware_update.md) — how dongle firmware
+  updates work: USB DFU via the chip's ROM bootloader, soft-jumped
+  from the running application via a `SET_MODE` command
+
+Still to come:
+
+- `user_manual.md` — installation and operation (placeholder)
+- `design_description.md` — architecture and algorithm details (placeholder)
 
 ## License
 
