@@ -187,6 +187,26 @@ static void gpio_init(const VoxMcuPinConfig *cfg)
 /* ---------------- Protocol emitters & handlers ---------------------- */
 
 /*
+ * Run mode controls the per-frame data source:
+ *   VOX_RUN_NORMAL  : synth_audio scenario (default while no host driving us)
+ *   VOX_RUN_INJECT  : host-supplied PCM via VOX_MSG_INJECT_PCM frames
+ *   VOX_RUN_PAUSED  : vox_process is skipped; outputs frozen
+ *
+ * Started in NORMAL so an unsupervised dongle keeps doing something
+ * recognizable.  The host switches modes via VOX_MSG_SET_MODE.
+ */
+static volatile uint8_t s_run_mode = VOX_RUN_NORMAL;
+
+/* INJECT_PCM landing zone.  The protocol parser callback copies
+ * received PCM here; the frame loop consumes it on the next
+ * iteration.  Both contexts are in the main thread (the parser is
+ * driven from vox_proto_drain_rx() which is called from main), so no
+ * locking is needed. */
+static int16_t s_inject_mic[VOX_FRAME_SIZE];
+static int16_t s_inject_rx[VOX_FRAME_SIZE];
+static volatile uint8_t s_inject_pcm_fresh;   /* 1 if not yet consumed */
+
+/*
  * Once at boot (and on any QUERY_HELLO from the host), send a HELLO
  * that advertises who we are and what capabilities we expose.
  */
@@ -200,9 +220,20 @@ static void emit_hello(void)
     for (size_t i = 0; i < sizeof(rev) && i < sizeof(h.fw_revision); i++)
         h.fw_revision[i] = rev[i];
     h.fw_build_unix  = 0;
-    h.capabilities   = VOX_CAP_LOG_STREAM;
+    /* Capability bits we honor today.  FW_UPDATE comes with slice J. */
+    h.capabilities   = VOX_CAP_TUNING | VOX_CAP_INJECT | VOX_CAP_LOG_STREAM;
     h.hw_id          = 0x47340000u; /* "G4" + zero filler; refine later */
     (void)vox_proto_send(VOX_MSG_HELLO, &h, sizeof(h));
+}
+
+/* Small helper: emit a VoxAck. */
+static void emit_ack(VoxMsgType for_type, VoxAckStatus status, uint32_t info)
+{
+    VoxAck a = {0};
+    a.in_response_to = (uint8_t)for_type;
+    a.status         = (uint8_t)status;
+    a.info           = info;
+    (void)vox_proto_send(VOX_MSG_ACK, &a, sizeof(a));
 }
 
 /*
@@ -265,21 +296,99 @@ static void send_state_frame(uint32_t seq, uint32_t now_ms,
 
 /*
  * Parser callback — fires once per fully decoded frame coming from
- * the host.  Today only QUERY_HELLO is wired; SET_TUNING / INJECT_PCM
- * / SET_MODE handling lands in G-bridge-3.
+ * the host.  ctx is a VoxState* so we can apply SET_TUNING in-place.
+ *
+ * For each command we either ACK with OK or with an explanatory
+ * status code.  The host can use the ack to know "your command was
+ * received and acted on" vs "I got something I didn't like."
  */
 static void on_proto_message(void *ctx, VoxMsgType type,
                              const uint8_t *payload, size_t payload_len)
 {
-    (void)ctx; (void)payload; (void)payload_len;
+    VoxState *vox = (VoxState *)ctx;
+
     switch (type) {
+
     case VOX_MSG_QUERY_HELLO:
         emit_hello();
         break;
+
+    case VOX_MSG_SET_TUNING:
+        if (payload_len != sizeof(VoxSetTuning)) {
+            emit_ack(type, VOX_ACK_BAD_LENGTH, (uint32_t)payload_len);
+            break;
+        }
+        if (vox) {
+            VoxSetTuning t;
+            memcpy(&t, payload, sizeof(t));
+            /* Map VoxSetTuning -> VoxConfig (same int fields).  Fields
+             * <= 0 in VoxConfig mean "leave unchanged" per vox_set_tuning's
+             * documented behavior. */
+            VoxConfig c = {0};
+            c.hang_ms                = t.hang_ms;
+            c.mic_led_threshold      = t.mic_led_threshold;
+            c.rx_led_threshold       = t.rx_led_threshold;
+            c.vad_led_prob_threshold = t.vad_led_prob_threshold;
+            c.aec_led_reduction_pct  = t.aec_led_reduction_pct;
+            c.rx_guard_vad_boost     = t.rx_guard_vad_boost;
+            c.rx_guard_snr_pct       = t.rx_guard_snr_pct;
+            vox_set_tuning(vox, &c);
+            emit_ack(type, VOX_ACK_OK, 0);
+        } else {
+            emit_ack(type, VOX_ACK_BUSY, 0);
+        }
+        break;
+
+    case VOX_MSG_SET_MODE:
+        if (payload_len != sizeof(VoxSetMode)) {
+            emit_ack(type, VOX_ACK_BAD_LENGTH, (uint32_t)payload_len);
+            break;
+        }
+        {
+            VoxSetMode m;
+            memcpy(&m, payload, sizeof(m));
+            switch (m.mode) {
+            case VOX_RUN_NORMAL:
+            case VOX_RUN_INJECT:
+            case VOX_RUN_PAUSED:
+                s_run_mode = m.mode;
+                emit_ack(type, VOX_ACK_OK, m.mode);
+                break;
+            case VOX_RUN_FW_UPDATE:
+                /* Slice J — soft-jump to ROM bootloader.  Not yet. */
+                emit_ack(type, VOX_ACK_NOT_SUPPORTED, m.mode);
+                break;
+            default:
+                emit_ack(type, VOX_ACK_NOT_SUPPORTED, m.mode);
+                break;
+            }
+        }
+        break;
+
+    case VOX_MSG_INJECT_PCM:
+        if (payload_len != sizeof(VoxInjectPcm)) {
+            emit_ack(type, VOX_ACK_BAD_LENGTH, (uint32_t)payload_len);
+            break;
+        }
+        {
+            VoxInjectPcm pcm;
+            memcpy(&pcm, payload, sizeof(pcm));
+            if (pcm.frame_size != VOX_INJECT_FRAME_SAMPLES) {
+                emit_ack(type, VOX_ACK_BAD_LENGTH, (uint32_t)pcm.frame_size);
+                break;
+            }
+            memcpy(s_inject_mic, pcm.mic, sizeof(s_inject_mic));
+            memcpy(s_inject_rx,  pcm.rx,  sizeof(s_inject_rx));
+            s_inject_pcm_fresh = 1;
+            /* INJECT_PCM intentionally does NOT ACK — it's high-rate
+             * (50 fps).  ACK traffic at that rate would chew the
+             * uplink for no value; an explicit failure ACK suffices
+             * if size validation fails. */
+        }
+        break;
+
     default:
-        /* Forward-compat: silently ignore types we don't handle yet.
-         * The host's capability check should keep this from happening
-         * for messages we haven't advertised support for. */
+        /* Forward-compat: silently ignore types we don't handle yet. */
         break;
     }
 }
@@ -387,9 +496,38 @@ int main(void)
         }
 
         const uint32_t now = vox_systick_now_ms();
-        (void)synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
 
-        const int ptt = vox_process(vox, mic, rx);
+        /* Select audio source by run mode.
+         *   NORMAL  : synth_audio scenario player drives mic+rx.
+         *   INJECT  : if a fresh INJECT_PCM arrived since last frame,
+         *             use it; else feed silence (host is between
+         *             frames or has stopped sending).
+         *   PAUSED  : we feed silence and skip vox_process below.
+         */
+        int run_now_paused = 0;
+        switch (s_run_mode) {
+        case VOX_RUN_NORMAL:
+            (void)synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
+            break;
+        case VOX_RUN_INJECT:
+            if (s_inject_pcm_fresh) {
+                memcpy(mic, s_inject_mic, sizeof(mic));
+                memcpy(rx,  s_inject_rx,  sizeof(rx));
+                s_inject_pcm_fresh = 0;
+            } else {
+                memset(mic, 0, sizeof(mic));
+                memset(rx,  0, sizeof(rx));
+            }
+            break;
+        case VOX_RUN_PAUSED:
+        default:
+            memset(mic, 0, sizeof(mic));
+            memset(rx,  0, sizeof(rx));
+            run_now_paused = (s_run_mode == VOX_RUN_PAUSED);
+            break;
+        }
+
+        const int ptt = run_now_paused ? 0 : vox_process(vox, mic, rx);
         tud_task();   /* belt-and-suspenders USB pump per frame */
 
         VoxLedState led = {0};
@@ -411,8 +549,9 @@ int main(void)
         send_state_frame(frame_n, now, &led, &dbg, ptt);
 
         /* Drain host→chip bytes through the parser, dispatching frames
-         * to on_proto_message().  Handles QUERY_HELLO today. */
-        (void)vox_proto_drain_rx(&proto_parser, on_proto_message, NULL);
+         * to on_proto_message().  ctx = vox so SET_TUNING can apply
+         * tuning in-place. */
+        (void)vox_proto_drain_rx(&proto_parser, on_proto_message, vox);
 
         /* Periodic chatter LOG — useful while G-bridge UI doesn't yet
          * subscribe to STATE_FRAME.  Dial back / remove once vox_qt
