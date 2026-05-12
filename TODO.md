@@ -11,7 +11,7 @@ Convention:
 - Each item: short name, then a one-line "why" in italics if it isn't obvious
 - New items at the bottom of their section unless they replace an existing one
 
-Last touched: 2026-05-09
+Last touched: 2026-05-12
 
 User stories that drive the priorities below: [docs/user_stories.md](docs/user_stories.md)
 
@@ -69,7 +69,7 @@ codebase, gated visibility.  See:
   - [x] G-bridge-1: chip emits HELLO + LOG frames at boot/periodic; ad-hoc UART writes replaced with `vox_proto_log()`.  See `platform/mcu/core/proto_transport.{h,c}`.
   - [x] G-bridge-2: chip emits STATE_FRAME at 50 fps; responds to QUERY_HELLO with a fresh HELLO.  Verified end-to-end on real silicon (zero CRC errors over hundreds of frames; QUERY round-trip ~100 ms).
   - [x] G-bridge-3: chip handles SET_TUNING, SET_MODE, INJECT_PCM, with ACK status codes.  Verified: SET_TUNING(hang_ms=100) flips hang_max 25→5→25 in state frames; INJECT_PCM with ±20000 sine on rx makes the chip's STATE_FRAME show rx_lvl≈12071 (theoretical 2/π·20000=12732) and RX LED on, one frame later.
-  - [ ] G-bridge-4: vox_qt dongle-mode renders state + sends tuning + injects PC audio.  Adds a LOG-message panel.
+  - [x] G-bridge-4: vox_qt dongle-mode renders state + sends tuning + injects PC audio.  Adds a LOG-message panel.  See `platform/linux/dongle_client.{h,cpp}` + the Source picker / `applySourceMode` / `applyInjectMode` / `renderState` / `pushTuningToDongleIfActive` paths in `platform/linux/main_qt.cpp`.
   - [ ] Mirror proto_transport into the custom CB main.c (currently only the Nucleo main.c uses it).
 - [ ] **Slice E: ADC + DMA + decimator** — sample mic/rx at 32 kHz via timer-triggered ADC, DMA into ring, run the existing CIC decimator down to 8 kHz frames.
 - [ ] **Slice F: vox_process on real audio** — swap synthetic input source for the ADC ring (depends on slice C blocker resolved).

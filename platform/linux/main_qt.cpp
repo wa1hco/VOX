@@ -1,8 +1,14 @@
 #include "audio_io.h"
 #include "vox.h"
 
+#ifdef VOX_QT_HAVE_DONGLE
+#include "dongle_client.h"
+#include <QSerialPortInfo>
+#endif
+
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
@@ -19,6 +25,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPalette>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QGridLayout>
@@ -645,38 +652,68 @@ public:
         auto *layout = new QVBoxLayout(root);
 
         // Device picker — at the top so "where am I getting audio from?"
-        // is the first thing the user sees.  Two QComboBoxes plus a
-        // Refresh button (Pulse devices come and go on USB plug events).
+        // is the first thing the user sees.  Source picker (Local /
+        // Dongle), plus mic and rx for the local case, plus a Refresh
+        // button (audio devices and serial ports come and go on USB
+        // plug events).
         auto *deviceForm = new QFormLayout();
+        sourceCombo_    = new QComboBox();
         micDeviceCombo_ = new QComboBox();
         rxDeviceCombo_  = new QComboBox();
+        sourceCombo_->setMinimumWidth(360);
         micDeviceCombo_->setMinimumWidth(360);
         rxDeviceCombo_->setMinimumWidth(360);
 
+        auto *refreshBtn = new QPushButton("Refresh");
+        refreshBtn->setToolTip("Re-enumerate audio devices and dongle ports "
+                               "(after USB plug/unplug)");
+
+        auto *sourceRow = new QHBoxLayout();
+        sourceRow->addWidget(sourceCombo_, 1);
+        sourceRow->addSpacing(refreshBtn->sizeHint().width() + 6);
+
         auto *micRow = new QHBoxLayout();
         micRow->addWidget(micDeviceCombo_, 1);
-        auto *refreshBtn = new QPushButton("Refresh");
-        refreshBtn->setToolTip("Re-enumerate audio devices (after USB plug/unplug)");
         micRow->addWidget(refreshBtn);
 
         auto *rxRow = new QHBoxLayout();
         rxRow->addWidget(rxDeviceCombo_, 1);
         rxRow->addSpacing(refreshBtn->sizeHint().width() + 6);   /* align with mic row */
 
+        deviceForm->addRow("Source", sourceRow);
         deviceForm->addRow("Microphone", micRow);
         deviceForm->addRow("RX (speaker monitor)", rxRow);
+
+        /* Inject-from-PC checkbox: only meaningful while a dongle is
+         * connected — when checked, mic+rx come from the host audio
+         * combos and get shipped to the chip as INJECT_PCM frames in
+         * place of its on-board source.  Lets the GUI drive the chip's
+         * vox_process with canned / live PC audio without an analog
+         * front end. */
+        injectPcCheckbox_ = new QCheckBox("Inject PC audio into dongle (uses mic + rx above)");
+        injectPcCheckbox_->setToolTip(
+            "When connected to a dongle: capture from the selected PC mic "
+            "and rx devices and stream them as INJECT_PCM frames to the "
+            "chip in place of its ADC / synthetic input.");
+        injectPcCheckbox_->setEnabled(false);  /* gated by source mode */
+        deviceForm->addRow(QString(), injectPcCheckbox_);
+
         layout->addLayout(deviceForm);
 
         // Selection changes reopen the audio io with the new pick.
         // Use the activated() signal (vs currentIndexChanged) so we
         // ignore the initial population that runs before audio_ exists,
         // and only react to actual user picks.
+        connect(sourceCombo_, QOverload<int>::of(&QComboBox::activated),
+                this, [this](int){ applySourceMode(); });
         connect(micDeviceCombo_, QOverload<int>::of(&QComboBox::activated),
                 this, [this](int){ reopenAudio(); });
         connect(rxDeviceCombo_,  QOverload<int>::of(&QComboBox::activated),
                 this, [this](int){ reopenAudio(); });
         connect(refreshBtn, &QPushButton::clicked,
                 this, [this](){ populateDeviceDropdowns(); });
+        connect(injectPcCheckbox_, &QCheckBox::toggled,
+                this, [this](bool on){ applyInjectMode(on); });
 
         auto *form = new QFormLayout();
 
@@ -806,8 +843,35 @@ public:
         layout->addWidget(createSliderRow("RX Guard SNR (%)", 110, 260, 145,
                   &rxGuardSnrSlider_, &rxGuardSnrValue_));
 
+        /* In Local mode the sliders are read once per onTick frame into
+         * a fresh VoxConfig (the existing pump).  In Dongle mode the
+         * chip is the one running vox_process, so any slider change has
+         * to travel down the wire — debounced into SET_TUNING. */
+        for (QSlider *s : { hangSlider_, micThreshSlider_, rxThreshSlider_,
+                            vadThreshSlider_, aecThreshSlider_,
+                            rxGuardVadBoostSlider_, rxGuardSnrSlider_ }) {
+            connect(s, &QSlider::valueChanged,
+                    this, [this](int){ scheduleTuningPush(); });
+        }
+
         statusLabel_ = new QLabel("Initializing audio...");
         layout->addWidget(statusLabel_);
+
+        /* Dongle LOG panel — shows VOX_MSG_LOG strings as they arrive.
+         * Read-only; auto-scrolls; cap at a few hundred lines so a
+         * chatty chip doesn't slowly eat memory.  Hidden in local mode
+         * because it'd just be dead space. */
+        dongleLogPanel_ = new QPlainTextEdit();
+        dongleLogPanel_->setReadOnly(true);
+        dongleLogPanel_->setMaximumBlockCount(500);
+        dongleLogPanel_->setMinimumHeight(80);
+        dongleLogPanel_->setStyleSheet(QString(
+            "background:%1;color:%2;border:1px solid %3;"
+            "border-radius:6px;padding:6px;font-family:monospace;")
+            .arg(theme::kInputBg, theme::kTextPrimary, theme::kPanelBorder));
+        dongleLogPanel_->setPlaceholderText("Dongle LOG messages will appear here.");
+        dongleLogPanel_->setVisible(false);
+        layout->addWidget(dongleLogPanel_);
 
         setCentralWidget(root);
 
@@ -945,6 +1009,10 @@ private:
         selectDeviceById(micDeviceCombo_, prevMic);
         selectDeviceById(rxDeviceCombo_,  prevRx);
 
+        // Re-enumerate available dongle ports too — they show up under
+        // the same Refresh button and on the same USB plug events.
+        populateSourceCombo();
+
         statusBar()->showMessage(
             QString("Found %1 audio device%2.")
                 .arg(filled)
@@ -952,11 +1020,285 @@ private:
             2000);
     }
 
+    /* Source picker: "Local PC audio" + one entry per serial port that
+     * looks like a dongle.  Item data is the canonical id we read in
+     * applySourceMode(): either "local" or "dongle:<systemLocation>". */
+    void populateSourceCombo()
+    {
+        if (!sourceCombo_) return;
+        const QString prev = sourceCombo_->currentData().toString();
+
+        QSignalBlocker sb(sourceCombo_);
+        sourceCombo_->clear();
+        sourceCombo_->addItem("Local PC audio", QString("local"));
+
+#ifdef VOX_QT_HAVE_DONGLE
+        /* Enumerate every serial port — we don't filter by vendor/product
+         * because the ST-Link VCP appears with various descriptions and
+         * future chip-USB will appear under a different VID/PID again.
+         * The user picks the right one; we just list candidates. */
+        const auto ports = QSerialPortInfo::availablePorts();
+        for (const auto &p : ports) {
+            const QString sysLoc = p.systemLocation();
+            QString display = QString("Dongle: %1").arg(sysLoc);
+            const QString desc = p.description();
+            if (!desc.isEmpty())
+                display += QString("  (%1)").arg(desc);
+            sourceCombo_->addItem(display, QString("dongle:%1").arg(sysLoc));
+        }
+#else
+        /* Build without Qt SerialPort — nothing to enumerate.  Keep the
+         * combo present so the layout doesn't jump; tooltip explains. */
+        sourceCombo_->setToolTip("Built without Qt SerialPort: "
+                                 "dongle mode unavailable.");
+#endif
+
+        // Restore previous pick if still present; otherwise "local".
+        for (int i = 0; i < sourceCombo_->count(); ++i) {
+            if (sourceCombo_->itemData(i).toString() == prev) {
+                sourceCombo_->setCurrentIndex(i);
+                return;
+            }
+        }
+        sourceCombo_->setCurrentIndex(0);
+    }
+
+    /* React to a Source combo change.  Two modes are mutually exclusive —
+     * Local pumps audio_io+vox_process here in onTick(); Dongle relies on
+     * STATE_FRAME signals from the chip and disables the mic/rx combos
+     * (we don't hold the host mic at all in dongle mode). */
+    void applySourceMode()
+    {
+        const QString sel = sourceCombo_->currentData().toString();
+
+        if (sel.startsWith("dongle:")) {
+            /* Tear down local audio first so we don't fight for the
+             * physical mic and so onTick stops calling vox_process. */
+            if (audio_) {
+                audio_io_close(audio_);
+                audio_ = nullptr;
+            }
+            /* mic/rx combos default disabled here; the inject checkbox
+             * re-enables them so the user can pick capture devices. */
+            micDeviceCombo_->setEnabled(false);
+            rxDeviceCombo_->setEnabled(false);
+            sourceMode_        = SourceMode::Dongle;
+            currentDonglePort_ = sel.mid(QStringLiteral("dongle:").size());
+            if (dongleLogPanel_)   dongleLogPanel_->setVisible(true);
+            if (injectPcCheckbox_) injectPcCheckbox_->setEnabled(true);
+
+#ifdef VOX_QT_HAVE_DONGLE
+            ensureDongleClient();
+            if (statusLabel_)
+                statusLabel_->setText(QString("Opening dongle %1...")
+                                          .arg(currentDonglePort_));
+            if (dongleClient_->open(currentDonglePort_)) {
+                /* Make the chip authoritative for the current GUI state
+                 * right at connect.  Run mode = NORMAL (chip runs its
+                 * own synthetic / live audio source) so we never inherit
+                 * a stale INJECT or PAUSED from a previous session.
+                 * SET_TUNING after that aligns thresholds with sliders. */
+                dongleClient_->sendSetMode(VOX_RUN_NORMAL);
+                pushTuningToDongleIfActive();
+            }
+#else
+            if (statusLabel_)
+                statusLabel_->setText("Dongle mode unavailable in this build.");
+#endif
+        } else {
+            /* Local mode — close the dongle if it was open, then reopen
+             * audio with whatever the mic/rx combos show. */
+#ifdef VOX_QT_HAVE_DONGLE
+            if (dongleClient_)
+                dongleClient_->close();
+#endif
+            /* Switching away from dongle while inject was on: just
+             * flip the local flag (audio_ will be reopened below for
+             * the local pump anyway).  Don't send SET_MODE — the port
+             * is closing and the chip's mode is no longer our concern. */
+            dongleInjectActive_ = false;
+            currentDonglePort_.clear();
+            sourceMode_ = SourceMode::Local;
+            micDeviceCombo_->setEnabled(true);
+            rxDeviceCombo_->setEnabled(true);
+            if (dongleLogPanel_) dongleLogPanel_->setVisible(false);
+            if (injectPcCheckbox_) {
+                QSignalBlocker b(injectPcCheckbox_);
+                injectPcCheckbox_->setChecked(false);
+                injectPcCheckbox_->setEnabled(false);
+            }
+            reopenAudio();
+        }
+    }
+
+    /* Enable / disable PC-audio injection while in dongle mode.  When
+     * on: re-enable the mic/rx combos, open audio_io against the user's
+     * picks, tell the chip SET_MODE=INJECT so it consumes our PCM.
+     * When off: close audio_io, disable the combos, SET_MODE=NORMAL so
+     * the chip goes back to its own source (synthetic or ADC). */
+    void applyInjectMode(bool on)
+    {
+        if (sourceMode_ != SourceMode::Dongle) {
+            /* Shouldn't happen — checkbox is gated by source mode — but
+             * be defensive: silently revert the check state. */
+            if (injectPcCheckbox_) {
+                QSignalBlocker b(injectPcCheckbox_);
+                injectPcCheckbox_->setChecked(false);
+            }
+            return;
+        }
+
+        if (on) {
+            dongleInjectActive_ = true;
+            micDeviceCombo_->setEnabled(true);
+            rxDeviceCombo_->setEnabled(true);
+            reopenAudio();   /* opens audio_ since gate now passes */
+#ifdef VOX_QT_HAVE_DONGLE
+            if (dongleClient_ && dongleClient_->isOpen())
+                dongleClient_->sendSetMode(VOX_RUN_INJECT);
+#endif
+        } else {
+            dongleInjectActive_ = false;
+#ifdef VOX_QT_HAVE_DONGLE
+            if (dongleClient_ && dongleClient_->isOpen())
+                dongleClient_->sendSetMode(VOX_RUN_NORMAL);
+#endif
+            if (audio_) {
+                audio_io_close(audio_);
+                audio_ = nullptr;
+            }
+            micDeviceCombo_->setEnabled(false);
+            rxDeviceCombo_->setEnabled(false);
+        }
+    }
+
+    /* Slider-change hook: kick a 30 ms debounce timer.  Dragging a
+     * slider fires valueChanged dozens of times per second; coalescing
+     * keeps us from flooding the 921600-baud uplink with SET_TUNING
+     * messages and matches the chip's frame rate (50 fps = 20 ms). */
+    void scheduleTuningPush()
+    {
+        if (sourceMode_ != SourceMode::Dongle) return;
+#ifdef VOX_QT_HAVE_DONGLE
+        if (!dongleTuningPushTimer_) {
+            dongleTuningPushTimer_ = new QTimer(this);
+            dongleTuningPushTimer_->setSingleShot(true);
+            dongleTuningPushTimer_->setInterval(30);
+            connect(dongleTuningPushTimer_, &QTimer::timeout,
+                    this, [this]() { pushTuningToDongleIfActive(); });
+        }
+        dongleTuningPushTimer_->start();
+#endif
+    }
+
+    /* Build a VoxConfig from current slider values and ship it to the
+     * chip via SET_TUNING.  No-op if not in dongle mode or port is
+     * closed (drag a slider before connecting and nothing tries to
+     * write to a non-existent serial port). */
+    void pushTuningToDongleIfActive()
+    {
+#ifdef VOX_QT_HAVE_DONGLE
+        if (sourceMode_ != SourceMode::Dongle)            return;
+        if (!dongleClient_ || !dongleClient_->isOpen())   return;
+
+        VoxConfig cfg = {};
+        cfg.sample_rate              = kSampleRate;
+        cfg.frame_size               = kFrameSize;
+        cfg.hang_ms                  = hangSlider_->value();
+        cfg.mic_led_threshold        = micThreshSlider_->value();
+        cfg.rx_led_threshold         = rxThreshSlider_->value();
+        cfg.vad_led_prob_threshold   = vadThreshSlider_->value();
+        cfg.aec_led_reduction_pct    = aecThreshSlider_->value();
+        cfg.rx_guard_vad_boost       = rxGuardVadBoostSlider_->value();
+        cfg.rx_guard_snr_pct         = rxGuardSnrSlider_->value();
+        dongleClient_->sendTuning(cfg);
+#endif
+    }
+
+#ifdef VOX_QT_HAVE_DONGLE
+    /* Lazy-construct the DongleClient on first use.  Parents it to this
+     * window for Qt-ownership cleanup, wires its signals to widget
+     * setters / status updates. */
+    void ensureDongleClient()
+    {
+        if (dongleClient_) return;
+        dongleClient_ = new DongleClient(this);
+
+        connect(dongleClient_, &DongleClient::connectionChanged,
+                this, [this](bool c) {
+                    if (!statusLabel_) return;
+                    if (c) {
+                        statusLabel_->setText(
+                            QString("Dongle connected: %1 (waiting for HELLO...)")
+                                .arg(currentDonglePort_));
+                    } else {
+                        statusLabel_->setText(
+                            QString("Dongle disconnected: %1")
+                                .arg(currentDonglePort_));
+                    }
+                });
+
+        connect(dongleClient_, &DongleClient::helloReceived,
+                this, [this](const QString &rev, quint32 caps, quint32 hwId) {
+                    dongleFwRevision_  = rev;
+                    dongleCapabilities_ = caps;
+                    dongleHwId_         = hwId;
+                    if (statusLabel_) {
+                        statusLabel_->setText(
+                            QString("Dongle %1  fw=%2  caps=0x%3  hw=0x%4")
+                                .arg(currentDonglePort_)
+                                .arg(rev.isEmpty() ? QStringLiteral("?") : rev)
+                                .arg(caps, 0, 16)
+                                .arg(hwId, 0, 16));
+                    }
+                });
+
+        connect(dongleClient_, &DongleClient::stateFrameReceived,
+                this, [this](const VoxLedState &led,
+                             const VoxDebugState &dbg,
+                             int ptt) {
+                    /* Pump the same widget-update path the local mode
+                     * uses; the heartbeat counter still drives the
+                     * status-bar "frames received" tick in onTick. */
+                    Q_UNUSED(ptt);
+                    ++dongleStateFramesSeen_;
+                    renderState(led, dbg);
+                });
+
+        connect(dongleClient_, &DongleClient::logReceived,
+                this, [this](const QString &line) {
+                    /* Drop the trailing newline if the chip-side put one
+                     * in — appendPlainText adds its own paragraph break. */
+                    QString trimmed = line;
+                    while (trimmed.endsWith('\n') || trimmed.endsWith('\r'))
+                        trimmed.chop(1);
+                    if (dongleLogPanel_)
+                        dongleLogPanel_->appendPlainText(trimmed);
+                    /* Mirror to stderr too — useful when running under
+                     * a terminal and the panel isn't visible. */
+                    qDebug().noquote() << "[dongle log]" << trimmed;
+                });
+
+        connect(dongleClient_, &DongleClient::ackReceived,
+                this, [](quint8 inResponseTo, quint8 status, quint32 info) {
+                    qDebug() << "[dongle ack] for_type=" << inResponseTo
+                             << "status=" << status << "info=" << info;
+                });
+    }
+#endif
+
     /* Tear down audio_, reopen with whatever the dropdowns currently
      * show.  Failure leaves audio_ NULL and reports via status label;
-     * onTick already handles audio_ == nullptr by skipping reads. */
+     * onTick already handles audio_ == nullptr by skipping reads.
+     *
+     * In dongle mode this is a no-op unless inject is active — we
+     * don't want to grab the host mic at all when we're just viewing
+     * the chip's state stream. */
     void reopenAudio()
     {
+        if (sourceMode_ == SourceMode::Dongle && !dongleInjectActive_)
+            return;
+
         if (audio_) {
             audio_io_close(audio_);
             audio_ = nullptr;
@@ -1135,6 +1477,36 @@ private:
 
     void onTick()
     {
+        /* Dongle mode: the chip is running vox_process; the host is
+         * either pure viewer (no inject) or capturing PC audio and
+         * shipping it down as INJECT_PCM (inject on).  In neither case
+         * do we call vox_process locally. */
+        if (sourceMode_ == SourceMode::Dongle) {
+#ifdef VOX_QT_HAVE_DONGLE
+            if (dongleInjectActive_ && audio_ && dongleClient_ &&
+                dongleClient_->isOpen())
+            {
+                /* INJECT_PCM expects exactly VOX_INJECT_FRAME_SAMPLES
+                 * (= kFrameSize at 8 kHz / 20 ms).  audio_io_read fills
+                 * exactly frame_size samples per channel. */
+                if (audio_io_read(audio_, micBuf_.data(), rxBuf_.data()) == 0) {
+                    dongleClient_->sendInjectPcm(
+                        micBuf_.data(), rxBuf_.data(), kFrameSize);
+                }
+            }
+#endif
+            if (++dongleStatusTickCount_ >= (1000 / kFrameMs)) {  /* ~1 Hz */
+                dongleStatusTickCount_ = 0;
+                statusBar()->showMessage(
+                    QString("Dongle %1: %2 state frames received%3")
+                        .arg(currentDonglePort_)
+                        .arg(dongleStateFramesSeen_)
+                        .arg(dongleInjectActive_ ? "  (inject ON)" : ""),
+                    1500);
+            }
+            return;
+        }
+
         if (!audio_ || !vox_)
             return;
 
@@ -1158,6 +1530,15 @@ private:
         VoxDebugState debug = {};
         vox_get_debug_state(vox_, &debug);
 
+        renderState(state, debug);
+    }
+
+    /* Drive all the on-screen widgets from a (LedState, DebugState) pair.
+     * Source-agnostic: called both from onTick (local-mode pump) and
+     * from the DongleClient::stateFrameReceived signal (chip-side pump).
+     * No I/O here — pure widget updates so it's safe on the GUI thread. */
+    void renderState(const VoxLedState &state, const VoxDebugState &debug)
+    {
         QString micDbfsText = formatDbfs(state.mic_level);
         QString postDbfsText = formatDbfs(debug.mic_level_post_aec);
         QString rxDbfsText = formatDbfs(state.rx_level);
@@ -1279,6 +1660,7 @@ private:
     QLabel *pttIndicator_ = nullptr;
     QLabel *statusLabel_ = nullptr;
     QLabel *decisionSummaryLabel_ = nullptr;
+    QPlainTextEdit *dongleLogPanel_ = nullptr;
 
     QLabel *micPostAecValue_ = nullptr;
     QLabel *noiseFloorValue_ = nullptr;
@@ -1323,6 +1705,27 @@ private:
 
     QComboBox *micDeviceCombo_ = nullptr;
     QComboBox *rxDeviceCombo_  = nullptr;
+
+    /* ---- Source mode (Local vs Dongle) ---- */
+    enum class SourceMode { Local, Dongle };
+    SourceMode sourceMode_ = SourceMode::Local;
+    QComboBox *sourceCombo_      = nullptr;
+    QCheckBox *injectPcCheckbox_ = nullptr;
+    bool       dongleInjectActive_ = false;
+    QString    currentDonglePort_;   /* empty when sourceMode_ == Local */
+
+#ifdef VOX_QT_HAVE_DONGLE
+    DongleClient *dongleClient_ = nullptr;
+    QString  dongleFwRevision_;
+    quint32  dongleCapabilities_ = 0;
+    quint32  dongleHwId_         = 0;
+    /* Debounce timer for slider → SET_TUNING; lazy-built on first use. */
+    QTimer *dongleTuningPushTimer_ = nullptr;
+#endif
+    /* Counters / timers used while in dongle mode to drive a status-bar
+     * heartbeat without needing per-frame widget updates yet (Stage B). */
+    int      dongleStateFramesSeen_ = 0;
+    int      dongleStatusTickCount_ = 0;
 };
 
 } // namespace
