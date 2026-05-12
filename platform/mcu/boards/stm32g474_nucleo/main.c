@@ -184,16 +184,11 @@ static void gpio_init(const VoxMcuPinConfig *cfg)
 
 /* ---------------- LED state print helper ---------------------------- */
 
-/* ---------------- HELLO frame emitter ------------------------------- */
+/* ---------------- Protocol emitters & handlers ---------------------- */
+
 /*
  * Once at boot (and on any QUERY_HELLO from the host), send a HELLO
  * that advertises who we are and what capabilities we expose.
- *
- * The slice G-bridge subset of capabilities at the moment:
- *   VOX_CAP_TUNING     — we honor SET_TUNING (slice G-bridge-3)
- *   VOX_CAP_INJECT     — we honor INJECT_PCM (slice G-bridge-3)
- *   VOX_CAP_LOG_STREAM — we emit LOG messages already
- *   (FW_UPDATE is not yet — slice J adds it)
  */
 static void emit_hello(void)
 {
@@ -208,6 +203,85 @@ static void emit_hello(void)
     h.capabilities   = VOX_CAP_LOG_STREAM;
     h.hw_id          = 0x47340000u; /* "G4" + zero filler; refine later */
     (void)vox_proto_send(VOX_MSG_HELLO, &h, sizeof(h));
+}
+
+/*
+ * Build a VoxStateFrameV1 from vox_core's two state structs and ship
+ * it.  Called once per 20 ms frame loop iteration.
+ *
+ * The wire struct (vox_dongle_proto.h) is deliberately a *subset* of
+ * VoxLedState + VoxDebugState — fixed layout, narrow types, no
+ * residual-correlation profile (sent on request later if needed).
+ * This widens the wire frame's compatibility window if vox_core's
+ * internal structs grow over time.
+ *
+ * leds bit layout:    bit0=MIC bit1=RX bit2=VAD bit3=AEC bit4=PTT
+ * flags bit layout:   bit0=voice_raw  bit1=voice_validated  bit2=rx_active
+ *                     bit3=energy_ok  bit4=rx_guard_applied
+ *                     bit5=ptt_reason_voice  bit6=ptt_reason_hang
+ */
+static void send_state_frame(uint32_t seq, uint32_t now_ms,
+                             const VoxLedState *led, const VoxDebugState *dbg,
+                             int ptt)
+{
+    VoxStateFrameV1 f = {0};
+    f.seq                              = seq;
+    f.timestamp_ms                     = now_ms;
+    f.mic_level_raw                    = (int16_t)dbg->mic_level_raw;
+    f.mic_level_post_aec               = (int16_t)dbg->mic_level_post_aec;
+    f.rx_level                         = (int16_t)led->rx_level;
+    f.noise_floor                      = (int16_t)dbg->noise_floor;
+    f.vad_probability_raw              = (int16_t)led->vad_probability_raw;
+    f.vad_probability                  = (int16_t)led->vad_probability;
+    f.aec_reduction_pct                = (int16_t)led->aec_reduction_pct;
+    f.snr_pct                          = (int16_t)dbg->snr_pct;
+
+    f.leds  = (uint8_t)((led->mic_led ? 1u : 0u)        |
+                        (led->rx_led  ? 1u << 1 : 0u)   |
+                        (led->vad_led ? 1u << 2 : 0u)   |
+                        (led->aec_led ? 1u << 3 : 0u)   |
+                        (ptt          ? 1u << 4 : 0u));
+    f.flags = (uint8_t)((dbg->voice_raw         ? 1u      : 0u) |
+                        (dbg->voice_validated   ? 1u << 1 : 0u) |
+                        (dbg->rx_active         ? 1u << 2 : 0u) |
+                        (dbg->energy_ok         ? 1u << 3 : 0u) |
+                        (dbg->rx_guard_applied  ? 1u << 4 : 0u) |
+                        (dbg->ptt_reason_voice  ? 1u << 5 : 0u) |
+                        (dbg->ptt_reason_hang   ? 1u << 6 : 0u));
+
+    f.hang_frames                      = (int16_t)dbg->hang_frames;
+    f.hang_frames_max                  = (int16_t)dbg->hang_frames_max;
+    f.effective_vad_threshold          = (int16_t)dbg->effective_vad_threshold;
+    f.effective_snr_threshold          = (int16_t)dbg->effective_snr_threshold;
+    f.energy_margin                    = (int16_t)dbg->energy_margin;
+    f.reserved0                        = 0;
+    f.residual_corr_pct                = (int16_t)dbg->residual_corr_pct;
+    f.residual_corr_dbfs_tenths        = (int16_t)dbg->residual_corr_dbfs_tenths;
+    f.residual_corr_peak_pct           = (int16_t)dbg->residual_corr_peak_pct;
+    f.residual_corr_peak_delay_samples = (int16_t)dbg->residual_corr_peak_delay_samples;
+
+    (void)vox_proto_send(VOX_MSG_STATE_FRAME, &f, sizeof(f));
+}
+
+/*
+ * Parser callback — fires once per fully decoded frame coming from
+ * the host.  Today only QUERY_HELLO is wired; SET_TUNING / INJECT_PCM
+ * / SET_MODE handling lands in G-bridge-3.
+ */
+static void on_proto_message(void *ctx, VoxMsgType type,
+                             const uint8_t *payload, size_t payload_len)
+{
+    (void)ctx; (void)payload; (void)payload_len;
+    switch (type) {
+    case VOX_MSG_QUERY_HELLO:
+        emit_hello();
+        break;
+    default:
+        /* Forward-compat: silently ignore types we don't handle yet.
+         * The host's capability check should keep this from happening
+         * for messages we haven't advertised support for. */
+        break;
+    }
 }
 
 /* ---------------- main ---------------------------------------------- */
@@ -289,9 +363,9 @@ int main(void)
     uint32_t last_log_ms = 0;
     uint32_t frame_n = 0;
 
-    /* Protocol parser for incoming bytes from the host.  Empty
-     * handler for now — G-bridge-1 only emits; G-bridge-3 wires the
-     * SET_TUNING / INJECT_PCM / QUERY_HELLO callbacks here. */
+    /* Protocol parser for incoming bytes from the host.  on_proto_message
+     * handles QUERY_HELLO now; SET_TUNING / INJECT_PCM / SET_MODE land
+     * in G-bridge-3. */
     VoxProtoParser proto_parser;
     vox_proto_parser_init(&proto_parser);
 
@@ -320,6 +394,8 @@ int main(void)
 
         VoxLedState led = {0};
         vox_get_led_state(vox, &led);
+        VoxDebugState dbg = {0};
+        vox_get_debug_state(vox, &dbg);
 
         gpio_write(cfg->pin_led_mic, led.mic_led);
         gpio_write(cfg->pin_led_rx,  led.rx_led);
@@ -328,16 +404,21 @@ int main(void)
         gpio_write(cfg->pin_led_ptt, ptt);
         gpio_write(cfg->pin_ptt_out, ptt);
 
-        /* Drain any host→chip bytes through the parser.  No callback
-         * wired yet — incoming SET_TUNING / QUERY_HELLO will be
-         * decoded but ignored until G-bridge-3. */
-        (void)vox_proto_drain_rx(&proto_parser, NULL, NULL);
-
-        /* Once-per-5-seconds liveness ping so a host listener can see
-         * the chip is alive without STATE_FRAME yet. */
+        /* Stream this frame's state to the host.  46-byte packed wire
+         * struct + 7-byte framing = 53 B per frame × 50 fps = 2.65 KB/s.
+         * Tiny fraction of the 921600-baud budget. */
         frame_n++;
+        send_state_frame(frame_n, now, &led, &dbg, ptt);
+
+        /* Drain host→chip bytes through the parser, dispatching frames
+         * to on_proto_message().  Handles QUERY_HELLO today. */
+        (void)vox_proto_drain_rx(&proto_parser, on_proto_message, NULL);
+
+        /* Periodic chatter LOG — useful while G-bridge UI doesn't yet
+         * subscribe to STATE_FRAME.  Dial back / remove once vox_qt
+         * renders the state stream directly. */
         if ((now - last_log_ms) >= 5000) {
-            vox_proto_log("alive: chip ticking, vox_process running");
+            vox_proto_log("alive: streaming STATE_FRAME @ 50 fps");
             last_log_ms = now;
         }
     }

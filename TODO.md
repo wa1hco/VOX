@@ -67,7 +67,7 @@ codebase, gated visibility.  See:
 
 - [~] **Slice G-bridge: dongle protocol on the ST-Link VCP transport** — runs the same dongle wire protocol over USART2 + ST-Link/V3 VCP at 921600 baud, so we can validate end-to-end against the existing single-USB hardware (no need to wait for the chip's native USB connector).  Same framer code (tools/vox_dongle_proto.c) will swap to TinyUSB CDC transport when that's wired.
   - [x] G-bridge-1: chip emits HELLO + LOG frames at boot/periodic; ad-hoc UART writes replaced with `vox_proto_log()`.  See `platform/mcu/core/proto_transport.{h,c}`.
-  - [ ] G-bridge-2: chip emits STATE_FRAME at 50 fps; responds to QUERY_HELLO.
+  - [x] G-bridge-2: chip emits STATE_FRAME at 50 fps; responds to QUERY_HELLO with a fresh HELLO.  Verified end-to-end on real silicon (zero CRC errors over hundreds of frames; QUERY round-trip ~100 ms).
   - [ ] G-bridge-3: chip handles SET_TUNING + INJECT_PCM; SET_MODE=VOX_RUN_INJECT routes incoming PCM into vox_process.
   - [ ] G-bridge-4: vox_qt dongle-mode renders state + sends tuning + injects PC audio.  Adds a LOG-message panel.
   - [ ] Mirror proto_transport into the custom CB main.c (currently only the Nucleo main.c uses it).

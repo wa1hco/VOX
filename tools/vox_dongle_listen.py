@@ -163,10 +163,45 @@ def decode_log(payload: bytes) -> str:
     return repr(payload.decode("ascii", errors="replace"))
 
 
+# VoxStateFrameV1 layout (46 bytes packed, little-endian).
+_STATE_FRAME_FMT = "<II 8h BB hh hhhh hhhh"
+_STATE_FRAME_SIZE = struct.calcsize(_STATE_FRAME_FMT)
+assert _STATE_FRAME_SIZE == 46, _STATE_FRAME_SIZE
+
+_LED_NAMES = ("MIC", "RX", "VAD", "AEC", "PTT")
+_FLAG_NAMES = ("vr", "vv", "rx", "eo", "rg", "prv", "prh")
+
+
+def decode_state_frame(payload: bytes) -> str:
+    if len(payload) < _STATE_FRAME_SIZE:
+        return f"<short STATE_FRAME, {len(payload)} bytes>"
+    (seq, ts_ms,
+     mic_raw, mic_post, rx_lvl, noise_floor,
+     vad_raw, vad_val, aec_red, snr_pct,
+     leds, flags,
+     hang, hang_max,
+     eff_vad, eff_snr, energy_margin, _reserved0,
+     resid_pct, resid_dbfs_tenths, resid_peak_pct, resid_peak_delay
+     ) = struct.unpack_from(_STATE_FRAME_FMT, payload)
+
+    led_str = "".join(name[0] if leds & (1 << i) else "-"
+                      for i, name in enumerate(_LED_NAMES))
+    return (f"seq={seq:>6}  t={ts_ms/1000:6.2f}s  "
+            f"leds={led_str}  "
+            f"mic={mic_raw:>5}/{mic_post:<5} rx={rx_lvl:<5} "
+            f"vad={vad_val:>3}% snr={snr_pct:>4}% "
+            f"aec_red={aec_red:>3}% hang={hang}/{hang_max}")
+
+
 DECODERS = {
-    "HELLO": decode_hello,
-    "LOG":   decode_log,
+    "HELLO":       decode_hello,
+    "LOG":         decode_log,
+    "STATE_FRAME": decode_state_frame,
 }
+
+# Verbose every-frame printing or one in N.  STATE_FRAME at 50 fps is
+# a lot to watch live; default print rate keeps the screen readable.
+STATE_FRAME_PRINT_EVERY = 25   # 0.5 s at 50 fps
 
 
 def main():
@@ -182,6 +217,7 @@ def main():
 
     parser = Parser()
     last_stats = time.monotonic()
+    state_frame_count = 0
     try:
         while True:
             data = ser.read(4096)
@@ -189,8 +225,15 @@ def main():
                 for msg_type, payload in parser.feed(data):
                     name = MSG_TYPES.get(msg_type, f"0x{msg_type:02x}")
                     decoder = DECODERS.get(name)
+
+                    # Throttle STATE_FRAME printing — at 50 fps it
+                    # otherwise drowns out everything else.
+                    if name == "STATE_FRAME":
+                        state_frame_count += 1
+                        if state_frame_count % STATE_FRAME_PRINT_EVERY != 0:
+                            continue
+
                     detail = decoder(payload) if decoder else f"{len(payload)} bytes"
-                    ts = time.monotonic() - parser.stats.get("_t0", 0)
                     print(f"[{name:14s}] {detail}")
 
             now = time.monotonic()
