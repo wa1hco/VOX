@@ -27,11 +27,13 @@
 #include "vox_mcu_pins.h"
 #include "vox_mcu_board.h"
 #include "clock_init.h"
+#include "proto_transport.h"
 #include "systick.h"
 #include "synth_audio.h"
 #include "usb/usb_init.h"
 #include "vox.h"
 #include "tusb.h"
+#include "vox_dongle_proto.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -71,7 +73,11 @@ extern void *spx_fft_init(int size);
  * value (AHB/APB prescalers all at /1).  USART BRR and SysTick reload
  * pull from this same constant so they track together. */
 #define SYSCLK_HZ       144000000U
-#define UART_BAUD       115200U
+/* Bumped from 115200 → 921600 so the protocol can carry INJECT_PCM
+ * frames at 50 fps (256 kbit/s payload + 5% overhead).  ST-Link/V3
+ * VCP handles 921600 cleanly; HSI16+PLL clock accuracy of ~1% leaves
+ * comfortable headroom over UART's ~2% tolerance. */
+#define UART_BAUD       921600U
 #define VOX_SAMPLE_RATE 8000
 #define VOX_FRAME_MS    20
 #define VOX_FRAME_SIZE  (VOX_SAMPLE_RATE * VOX_FRAME_MS / 1000)   /* 160 */
@@ -79,51 +85,18 @@ extern void *spx_fft_init(int size);
 #define USART_AF_PA2_TX 7U
 #define USART_AF_PA3_RX 7U
 
-/* ---------------- UART (USART2 → ST-Link VCP) ----------------------- */
-
+/* ---------------- USART2 / protocol transport ----------------------- *
+ * uart_init() configures the USART2 peripheral clock + GPIO AF, then
+ * hands off to vox_proto_transport_init() which sets baud, enables
+ * RX/TX, and arms the RXNE interrupt.  All chip→host traffic from
+ * here on is framed VOX_MSG_* via vox_proto_send / vox_proto_log;
+ * no ad-hoc UART writes remain.
+ */
 static void uart_init(void)
 {
     RCC->APB1ENR1 |= RCC_APB1ENR1_USART2EN;
-
-    USART2->CR1 = 0;
-    USART2->BRR = SYSCLK_HZ / UART_BAUD;
-    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
-}
-
-static void uart_write_char(char c)
-{
-    while ((USART2->ISR & USART_ISR_TXE) == 0)
-        ;
-    USART2->TDR = (uint8_t)c;
-}
-
-static void uart_write(const char *s)
-{
-    while (*s)
-        uart_write_char(*s++);
-}
-
-static void uart_write_u32(uint32_t v)
-{
-    char buf[11];
-    int i = 10;
-    buf[i] = '\0';
-    if (v == 0) { uart_write_char('0'); return; }
-    while (v > 0 && i > 0) {
-        buf[--i] = '0' + (v % 10);
-        v /= 10;
-    }
-    uart_write(&buf[i]);
-}
-
-static void uart_write_i32(int32_t v)
-{
-    if (v < 0) {
-        uart_write_char('-');
-        uart_write_u32((uint32_t)(-v));
-    } else {
-        uart_write_u32((uint32_t)v);
-    }
+    /* GPIO AF for PA2/PA3 is set in gpio_init() before we get here. */
+    vox_proto_transport_init(SYSCLK_HZ, UART_BAUD);
 }
 
 /* ---------------- GPIO ---------------------------------------------- */
@@ -211,30 +184,30 @@ static void gpio_init(const VoxMcuPinConfig *cfg)
 
 /* ---------------- LED state print helper ---------------------------- */
 
-static void print_state(int phase, const VoxLedState *led, int ptt)
+/* ---------------- HELLO frame emitter ------------------------------- */
+/*
+ * Once at boot (and on any QUERY_HELLO from the host), send a HELLO
+ * that advertises who we are and what capabilities we expose.
+ *
+ * The slice G-bridge subset of capabilities at the moment:
+ *   VOX_CAP_TUNING     — we honor SET_TUNING (slice G-bridge-3)
+ *   VOX_CAP_INJECT     — we honor INJECT_PCM (slice G-bridge-3)
+ *   VOX_CAP_LOG_STREAM — we emit LOG messages already
+ *   (FW_UPDATE is not yet — slice J adds it)
+ */
+static void emit_hello(void)
 {
-    uart_write("phase=");
-    uart_write_u32((uint32_t)phase);
-    uart_write(" MIC=");  uart_write_char(led->mic_led ? '1' : '0');
-    uart_write(" RX=");   uart_write_char(led->rx_led  ? '1' : '0');
-    uart_write(" VAD=");  uart_write_char(led->vad_led ? '1' : '0');
-    uart_write(" AEC=");  uart_write_char(led->aec_led ? '1' : '0');
-    uart_write(" PTT=");  uart_write_char(ptt          ? '1' : '0');
-    uart_write(" USB=");  uart_write_char(tud_mounted() ? 'Y' : '-');
-    uart_write("  mic="); uart_write_i32(led->mic_level);
-    uart_write(" rx=");   uart_write_i32(led->rx_level);
-    uart_write(" vad%="); uart_write_i32(led->vad_probability);
-    uart_write(" red%="); uart_write_i32(led->aec_reduction_pct);
-    uart_write("\r\n");
-}
-
-static int led_state_changed(const VoxLedState *a, const VoxLedState *b, int ptt_a, int ptt_b)
-{
-    return a->mic_led != b->mic_led ||
-           a->rx_led  != b->rx_led  ||
-           a->vad_led != b->vad_led ||
-           a->aec_led != b->aec_led ||
-           ptt_a      != ptt_b;
+    VoxHello h = {0};
+    h.proto_version  = VOX_PROTO_VERSION;
+    /* fw_revision is a placeholder until slice I lands a real build
+     * stamp.  Keep it short (< 16 chars incl. terminator). */
+    const char rev[] = "vox-dev";
+    for (size_t i = 0; i < sizeof(rev) && i < sizeof(h.fw_revision); i++)
+        h.fw_revision[i] = rev[i];
+    h.fw_build_unix  = 0;
+    h.capabilities   = VOX_CAP_LOG_STREAM;
+    h.hw_id          = 0x47340000u; /* "G4" + zero filler; refine later */
+    (void)vox_proto_send(VOX_MSG_HELLO, &h, sizeof(h));
 }
 
 /* ---------------- main ---------------------------------------------- */
@@ -259,9 +232,10 @@ int main(void)
      * saw saved-xPSR.T corruption (UsageFault → HardFault).  Once init
      * is done we enable the tick for the frame loop. */
 
-    uart_write("\r\n");
-    uart_write("VOX slice-D: board=stm32g474_nucleo  sysclk=144MHz  fs=8kHz frame=20ms\r\n");
-    uart_write("Synthetic scenario: silence | RX-only | mic-only | mic+RX, 1s each.\r\n");
+    /* Boot-time HELLO frame so a host that's listening when we come
+     * up immediately knows who we are.  Sent again on QUERY_HELLO. */
+    emit_hello();
+    vox_proto_log("VOX boot: sysclk=144MHz fs=8kHz frame=20ms scenario=synth");
 
     /* Bring up vox_core.  speex_echo_state_init + speex_preprocess_state_init
      * malloc internally — that's the first real exercise of our _sbrk.
@@ -272,9 +246,7 @@ int main(void)
      * deterministically in pure speex API (no vox_core involvement);
      * see memory:mcu-aec-tail-bug.md.
      */
-    uart_write("heap_start=");
-    uart_write_u32((uint32_t)&_heap_start);
-    uart_write(" calling vox_create...\r\n");
+    vox_proto_log("calling vox_create...");
     VoxConfig vc = {
         .sample_rate            = VOX_SAMPLE_RATE,
         .frame_size             = VOX_FRAME_SIZE,
@@ -289,10 +261,10 @@ int main(void)
     };
     VoxState *vox = vox_create(&vc);
     if (!vox) {
-        uart_write("FATAL: vox_create() returned NULL — heap or speexdsp init failed.\r\n");
+        vox_proto_log("FATAL: vox_create() returned NULL — heap or speexdsp init failed.");
         for (;;) { __asm__ volatile ("wfi"); }
     }
-    uart_write("vox_create() ok — heap and speexdsp alive.\r\n");
+    vox_proto_log("vox_create() ok");
 
     /* USB CDC-ACM bring-up.  Configures the chip-side peripheral (clock
      * source, GPIO AF, NVIC), then asks TinyUSB to enumerate as a CDC
@@ -302,7 +274,7 @@ int main(void)
      * second.  The custom CB board has a proper USB micro-B for this. */
     vox_usb_init();
     tud_init(0);
-    uart_write("USB CDC-ACM init ok\r\n");
+    vox_proto_log("USB CDC-ACM init ok (no host on PA11/PA12 expected on Nucleo-64)");
 
     /* Now safe to enable the 1 ms tick — init's float-heavy paths are done. */
     vox_systick_init(SYSCLK_HZ);
@@ -313,44 +285,38 @@ int main(void)
      * 8 kHz speexdsp pipeline; a real measurement comes later. */
     int16_t mic[VOX_FRAME_SIZE];
     int16_t rx[VOX_FRAME_SIZE];
-    VoxLedState led_prev = {0};
-    int ptt_prev = 0;
     uint32_t next_deadline = vox_systick_now_ms();
-    uint32_t last_usb_report_ms = 0;
-    int      last_usb_mounted   = -1;   /* force first transition print */
+    uint32_t last_log_ms = 0;
+    uint32_t frame_n = 0;
+
+    /* Protocol parser for incoming bytes from the host.  Empty
+     * handler for now — G-bridge-1 only emits; G-bridge-3 wires the
+     * SET_TUNING / INJECT_PCM / QUERY_HELLO callbacks here. */
+    VoxProtoParser proto_parser;
+    vox_proto_parser_init(&proto_parser);
 
     /* Frame loop — full VOX pipeline at 50 fps.
      *
-     * Slice C complete: synth_audio fills mic+rx, vox_process runs
-     * AEC + VAD + state machine, GPIO writes drive the 5 LEDs and
-     * PTT_OUT, UART prints scenario phase + LED state on transitions
-     * (mirrors vox_linux's logging style).
-     *
-     * The previous "FFT direction trap" block comment here documented
-     * an apparent crash in kiss_fftr2; that turned out to be heap
-     * corruption from the AEC adaptive-filter tail at M=16 stomping the
-     * preprocess state.  Working around it via VoxConfig.aec_filter_frames=4
-     * (passed in vc above).  See memory:mcu-aec-tail-bug.md.
+     * Slice C: vox_process runs (with AEC tail M=4 to dodge the speex
+     * preprocess-state heap stomp; see memory:mcu-aec-tail-bug.md).
+     * Slice D: SYSCLK = 144 MHz.
+     * Slice G1: TinyUSB CDC-ACM is up (no host on PA11/PA12 yet).
+     * Slice G-bridge-1: chip→host LOG/HELLO frames go out over
+     * USART2 → ST-Link VCP → host.  STATE_FRAME emission lands in
+     * G-bridge-2; SET_TUNING / INJECT_PCM handling in G-bridge-3.
      */
     for (;;) {
         next_deadline += VOX_FRAME_MS;
         while ((int32_t)(vox_systick_now_ms() - next_deadline) < 0) {
-            /* TinyUSB pumps the device task here too so background
-             * USB events (descriptor requests, set-config, status IN)
-             * still progress while we wait for the next frame slot. */
-            tud_task();
+            tud_task();   /* USB device task — runs while we idle */
             __asm__ volatile ("wfi");
         }
 
-        uint32_t now = vox_systick_now_ms();
-        int phase = synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
+        const uint32_t now = vox_systick_now_ms();
+        (void)synth_audio_fill_frame(mic, rx, VOX_FRAME_SIZE, now);
 
-        int ptt = vox_process(vox, mic, rx);
-
-        /* Service USB once per frame too in case wfi above never woke
-         * us (it does on every SysTick = 1 ms, but belt-and-suspenders
-         * during bring-up). */
-        tud_task();
+        const int ptt = vox_process(vox, mic, rx);
+        tud_task();   /* belt-and-suspenders USB pump per frame */
 
         VoxLedState led = {0};
         vox_get_led_state(vox, &led);
@@ -362,24 +328,17 @@ int main(void)
         gpio_write(cfg->pin_led_ptt, ptt);
         gpio_write(cfg->pin_ptt_out, ptt);
 
-        if (led_state_changed(&led, &led_prev, ptt, ptt_prev)) {
-            print_state(phase, &led, ptt);
-            led_prev = led;
-            ptt_prev = ptt;
-        }
+        /* Drain any host→chip bytes through the parser.  No callback
+         * wired yet — incoming SET_TUNING / QUERY_HELLO will be
+         * decoded but ignored until G-bridge-3. */
+        (void)vox_proto_drain_rx(&proto_parser, NULL, NULL);
 
-        /* Print only on USB mount/unmount transition.  A periodic
-         * heartbeat is suppressed when there's no host connected — the
-         * NUCLEO-G474RE has no USB-user connector, so until the chip
-         * is in a board with USB wired to PA11/PA12, this transitions
-         * exactly once at boot (to "not mounted") and stays there. */
-        const int usb_mounted = tud_mounted() ? 1 : 0;
-        if (usb_mounted != last_usb_mounted) {
-            uart_write("USB ");
-            uart_write(usb_mounted ? "MOUNTED — host enumerated us\r\n"
-                                   : "unmounted (no host on PA11/PA12)\r\n");
-            last_usb_mounted = usb_mounted;
-            last_usb_report_ms = vox_systick_now_ms();
+        /* Once-per-5-seconds liveness ping so a host listener can see
+         * the chip is alive without STATE_FRAME yet. */
+        frame_n++;
+        if ((now - last_log_ms) >= 5000) {
+            vox_proto_log("alive: chip ticking, vox_process running");
+            last_log_ms = now;
         }
     }
 }

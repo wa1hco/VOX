@@ -194,6 +194,7 @@ if(NOT BOARD STREQUAL "")
             platform/mcu/core/clock_init.c
             platform/mcu/core/systick.c
             platform/mcu/core/synth_audio.c
+            platform/mcu/core/proto_transport.c
             platform/mcu/core/usb/usb_init.c
             platform/mcu/core/usb/usb_descriptors.c
             platform/mcu/core/usb/usb_irq_glue.c
@@ -215,6 +216,7 @@ if(NOT BOARD STREQUAL "")
             speexdsp_static
             cmsis_stm32g4
             tinyusb_dcd_stm32g4
+            vox_dongle_proto
         )
 
         # Use the board's linker script and produce a .map file alongside

@@ -79,6 +79,24 @@ __attribute__((weak, alias("Default_Handler"))) void DMA1_Channel7_IRQHandler(vo
 __attribute__((weak, alias("Default_Handler"))) void ADC1_2_IRQHandler(void);              /* 18 */
 __attribute__((weak, alias("Default_Handler"))) void USB_HP_IRQHandler(void);              /* 19 */
 __attribute__((weak, alias("Default_Handler"))) void USB_LP_IRQHandler(void);              /* 20 */
+__attribute__((weak, alias("Default_Handler"))) void FDCAN1_IT0_IRQHandler(void);          /* 21 */
+__attribute__((weak, alias("Default_Handler"))) void FDCAN1_IT1_IRQHandler(void);          /* 22 */
+__attribute__((weak, alias("Default_Handler"))) void EXTI9_5_IRQHandler(void);             /* 23 */
+__attribute__((weak, alias("Default_Handler"))) void TIM1_BRK_TIM15_IRQHandler(void);      /* 24 */
+__attribute__((weak, alias("Default_Handler"))) void TIM1_UP_TIM16_IRQHandler(void);       /* 25 */
+__attribute__((weak, alias("Default_Handler"))) void TIM1_TRG_COM_TIM17_IRQHandler(void);  /* 26 */
+__attribute__((weak, alias("Default_Handler"))) void TIM1_CC_IRQHandler(void);             /* 27 */
+__attribute__((weak, alias("Default_Handler"))) void TIM2_IRQHandler(void);                /* 28 */
+__attribute__((weak, alias("Default_Handler"))) void TIM3_IRQHandler(void);                /* 29 */
+__attribute__((weak, alias("Default_Handler"))) void TIM4_IRQHandler(void);                /* 30 */
+__attribute__((weak, alias("Default_Handler"))) void I2C1_EV_IRQHandler(void);             /* 31 */
+__attribute__((weak, alias("Default_Handler"))) void I2C1_ER_IRQHandler(void);             /* 32 */
+__attribute__((weak, alias("Default_Handler"))) void I2C2_EV_IRQHandler(void);             /* 33 */
+__attribute__((weak, alias("Default_Handler"))) void I2C2_ER_IRQHandler(void);             /* 34 */
+__attribute__((weak, alias("Default_Handler"))) void SPI1_IRQHandler(void);                /* 35 */
+__attribute__((weak, alias("Default_Handler"))) void SPI2_IRQHandler(void);                /* 36 */
+__attribute__((weak, alias("Default_Handler"))) void USART1_IRQHandler(void);              /* 37 */
+__attribute__((weak, alias("Default_Handler"))) void USART2_IRQHandler(void);              /* 38 */
 
 /*
  * Vector table.  The placement section name (.isr_vector) is matched by
@@ -126,7 +144,25 @@ const void * const g_vector_table[] = {
     (const void *)ADC1_2_IRQHandler,           /* IRQ 18 — slot 34 */
     (const void *)USB_HP_IRQHandler,           /* IRQ 19 — slot 35 */
     (const void *)USB_LP_IRQHandler,           /* IRQ 20 — slot 36 */
-    /* IRQs above 20 zero-pad implicitly (no slot here = handler unreachable) */
+    (const void *)FDCAN1_IT0_IRQHandler,       /* IRQ 21 — slot 37 */
+    (const void *)FDCAN1_IT1_IRQHandler,       /* IRQ 22 — slot 38 */
+    (const void *)EXTI9_5_IRQHandler,          /* IRQ 23 — slot 39 */
+    (const void *)TIM1_BRK_TIM15_IRQHandler,   /* IRQ 24 — slot 40 */
+    (const void *)TIM1_UP_TIM16_IRQHandler,    /* IRQ 25 — slot 41 */
+    (const void *)TIM1_TRG_COM_TIM17_IRQHandler, /* IRQ 26 — slot 42 */
+    (const void *)TIM1_CC_IRQHandler,          /* IRQ 27 — slot 43 */
+    (const void *)TIM2_IRQHandler,             /* IRQ 28 — slot 44 */
+    (const void *)TIM3_IRQHandler,             /* IRQ 29 — slot 45 */
+    (const void *)TIM4_IRQHandler,             /* IRQ 30 — slot 46 */
+    (const void *)I2C1_EV_IRQHandler,          /* IRQ 31 — slot 47 */
+    (const void *)I2C1_ER_IRQHandler,          /* IRQ 32 — slot 48 */
+    (const void *)I2C2_EV_IRQHandler,          /* IRQ 33 — slot 49 */
+    (const void *)I2C2_ER_IRQHandler,          /* IRQ 34 — slot 50 */
+    (const void *)SPI1_IRQHandler,             /* IRQ 35 — slot 51 */
+    (const void *)SPI2_IRQHandler,             /* IRQ 36 — slot 52 */
+    (const void *)USART1_IRQHandler,           /* IRQ 37 — slot 53 */
+    (const void *)USART2_IRQHandler,           /* IRQ 38 — slot 54 */
+    /* IRQs above 38 zero-pad implicitly (no slot here = handler unreachable) */
 };
 
 void Reset_Handler(void)

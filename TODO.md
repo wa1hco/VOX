@@ -64,6 +64,13 @@ codebase, gated visibility.  See:
 ### Roadmap (future slices, in order)
 
 - [~] **Slice G: USB CDC-ACM** — code in tree; chip-side bring-up confirmed (USBEN, CLK48SEL=PLLQ, PLLRDY, DPPU all OK on the Nucleo). NUCLEO-G474RE has no USB-user connector; PA11/PA12 only come out on Morpho header CN10 (pins 14, 12). Enumeration test pending one of: bench-wire a USB-A cable to the Morpho header, or wait for the custom CB board which has a proper USB micro-B wired to PA11/PA12. See memory:mcu-usb-enumeration-pending.md.
+
+- [~] **Slice G-bridge: dongle protocol on the ST-Link VCP transport** — runs the same dongle wire protocol over USART2 + ST-Link/V3 VCP at 921600 baud, so we can validate end-to-end against the existing single-USB hardware (no need to wait for the chip's native USB connector).  Same framer code (tools/vox_dongle_proto.c) will swap to TinyUSB CDC transport when that's wired.
+  - [x] G-bridge-1: chip emits HELLO + LOG frames at boot/periodic; ad-hoc UART writes replaced with `vox_proto_log()`.  See `platform/mcu/core/proto_transport.{h,c}`.
+  - [ ] G-bridge-2: chip emits STATE_FRAME at 50 fps; responds to QUERY_HELLO.
+  - [ ] G-bridge-3: chip handles SET_TUNING + INJECT_PCM; SET_MODE=VOX_RUN_INJECT routes incoming PCM into vox_process.
+  - [ ] G-bridge-4: vox_qt dongle-mode renders state + sends tuning + injects PC audio.  Adds a LOG-message panel.
+  - [ ] Mirror proto_transport into the custom CB main.c (currently only the Nucleo main.c uses it).
 - [ ] **Slice E: ADC + DMA + decimator** — sample mic/rx at 32 kHz via timer-triggered ADC, DMA into ring, run the existing CIC decimator down to 8 kHz frames.
 - [ ] **Slice F: vox_process on real audio** — swap synthetic input source for the ADC ring (depends on slice C blocker resolved).
 - [ ] **Slice G: USB CDC-ACM on PA11/PA12** — replaces UART; carries the dongle protocol (Stories 1–4 read/write, test injection, FW update).
